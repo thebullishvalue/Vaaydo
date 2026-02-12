@@ -1,198 +1,65 @@
-# VAAYDO (वायदो) — The Promise
+# VAAYDO (वायदो) — FnO Trade Intelligence
 
-### World's First God-Tier Options Trading Intelligence System
+**Version 3.1.0** · Hemrek Capital
 
-**Hemrek Capital** · Version 3.0.0
-
----
-
-## Overview
-
-VAAYDO is a comprehensive, self-contained FnO (Futures & Options) trade intelligence system built for the Indian derivatives market. It auto-fetches all market data, computes institutional-grade analytics from raw OHLCV, and delivers conviction-scored trade recommendations backed by rigorous quantitative mathematics.
-
-Named after the Gujarati/Sanskrit word for **"promise"**, VAAYDO embodies the commitment to mathematically-rigorous, bias-free trade identification.
+World's first god-tier options trading intelligence system. 20 mathematical engines, 10 strategy evaluators, ensemble probability fusion, regime-aware conviction scoring.
 
 ---
 
-## Mathematical Arsenal — 20 Engines
+## Architecture (7-Layer Stack)
 
-| # | Engine | Implementation |
-|---|--------|---------------|
-| 1 | **Black-Scholes-Merton** | Full pricing + 9 Greeks (Δ, Γ, Θ, ν, ρ, Vanna, Volga, Charm, Speed) |
-| 2 | **Multi-Estimator Volatility** | Close-to-Close, Parkinson, Garman-Klass, Yang-Zhang (weighted composite) |
-| 3 | **GARCH(1,1)** | Conditional variance forecasting, persistence, half-life estimation |
-| 4 | **Volatility Risk Premium** | Adaptive IV estimation from RV + regime-dependent VRP factor |
-| 5 | **Monte Carlo (Antithetic)** | 10,000 effective paths with antithetic variate variance reduction |
-| 6 | **Kelly Criterion** | Half-Kelly with confidence-weighted dynamic position sizing |
-| 7 | **Hidden Markov Model** | 6-state volatility + 5-state trend regime detection |
-| 8 | **Kalman Filter** | Adaptive signal smoothing (via Nirnay heritage) |
-| 9 | **CUSUM Detection** | Multi-stream structural break alerts |
-| 10 | **Bayesian Adaptive Thresholds** | No-bias, data-driven boundary discovery |
-| 11 | **Higher-Order Greeks** | Vanna, Volga, Charm, Speed for sophisticated risk mgmt |
-| 12 | **Composite Risk Score** | Regime-dependent weighted risk aggregation |
-| 13 | **Ensemble POP** | Inverse-variance weighted BSM + MC fusion |
-| 14 | **Regime Transition** | Stability scoring + transition probability forecasting |
-| 15 | **Entropy Uncertainty** | Regime ambiguity quantification |
-| 16 | **Expected Move Zones** | 1σ/2σ/3σ log-normal probability distributions |
-| 17 | **Sharpe Optimization** | Risk-adjusted strategy ranking |
-| 18 | **Information Ratio** | Strategy performance benchmarking |
-| 19 | **Unified Conviction** | §9.1 multi-factor weighted formula |
-| 20 | **Optimal DTE** | Theta decay curve analysis |
+```
+L7 │ Kelly Criterion — Half-Kelly, confidence-weighted, capital-capped
+L6 │ Strategy Engine — 10 strategies, real MC for all, full 9-Greeks
+L5 │ Regime Intelligence — 6-Vol × 5-Trend + ADX + Kalman + CUSUM
+L4 │ BSM Pricing — Analytical + 9 Greeks (Δ Γ Θ ν ρ Vanna Volga Charm Speed)
+L3 │ Monte Carlo — 10K antithetic paths, generic payoff engine
+L2 │ Technical Analysis — RSI, ATR, ADX, MAs, Volume, Kalman Filter
+L1 │ Data Ingestion — Auto-fetch, Multi-Estimator Vol, GARCH, VRP
+```
 
-## Strategy Universe — 10 Active
+## v3.1.0 Bugfixes (14 Fixes)
 
-| Strategy | Market View | Risk Profile |
-|----------|------------|--------------|
-| Short Strangle | Neutral, Range-bound | Unlimited risk, High premium |
-| Short Straddle | Strongly Neutral | Unlimited risk, Max premium |
-| Iron Condor | Neutral, Defined Risk | Defined risk, Moderate premium |
-| Iron Butterfly | Pin at Strike | Defined risk, High premium |
-| Bull Put Spread | Bullish | Defined risk |
-| Bear Call Spread | Bearish | Defined risk |
-| Calendar Spread | Neutral, Vol Expansion | Defined risk, Time decay |
-| Jade Lizard | Neutral-Bullish | Upside risk limited |
-| Broken Wing Butterfly | Directional Bias | Asymmetric risk |
-| Ratio Spread | Mildly Bullish | Unlimited upside risk |
+| Fix | Bug | Resolution |
+|-----|-----|------------|
+| #1 | Strike collapse when em < gap | Enforce max(em, gap) for all strike placement |
+| #2 | Iron Butterfly wing width = 0 | ww = max(snap(em*1.2, gap), min_wing) |
+| #3 | Sharpe 10+ digit values | clamp_sharpe(): return 0 if std < 0.01, cap [-5, 5] |
+| #4 | Arbitrary max loss for unlimited risk | span_margin(): max(15% underlying, 2σ monthly) |
+| #5 | EV normalization wrong for ₹1000+ stocks | Normalize as ev/max_profit ratio, not absolute ₹ |
+| #6 | Risk-Reward explosion (ml=0.01 floor) | clamp_rr(): cap at [0, 50] |
+| #7 | Bull Put/Bear Call strikes collapse | Enforce lp ≤ sp - min_wing |
+| #8 | 5/10 strategies used fake MC | All 10 now use MC.analyze() with real simulation |
+| #9 | IC/IB/Calendar Greeks = theta only | compute_full_greeks() for all 9 Greeks on every strategy |
+| #10 | Calendar max_profit fabricated | Proper BSM back month residual at front expiry |
+| #11 | BWB net credit had ×0.1 multiplier | Correct payoff: 2×center - low - high |
+| #12 | Ratio Spread mp overstated | Correct: (sK-lK) + net_credit at short strike |
+| #13 | Zero-premium strategies displayed | Skip when net_credit < ₹0.50 |
+| #14 | Missing lot sizes | 110+ NSE lot sizes integrated |
 
----
+## New in v3.1
 
-## Installation
+- **Kalman Filter** (§5.3) — Adaptive trend smoothing for regime detection
+- **ADX** (§4.3) — Trend strength confirmation (threshold 25)
+- **SPAN Margin** — Realistic max loss for unlimited-risk strategies
+- **Generic MC Engine** — MC.analyze() works for any multi-leg payoff
+- **Greeks Algebra** — Greeks dataclass with add/negate/scale operators
+- **Lot Sizes** — 110+ NSE F&O lot sizes for position sizing
 
-### Prerequisites
-
-- Python 3.9+
-- Internet access (for yfinance market data)
-
-### Setup
+## Quick Start
 
 ```bash
-# Clone the repository
-git clone https://github.com/hemrek-capital/vaaydo.git
-cd vaaydo
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Launch
 streamlit run vaaydo.py
-```
-
-The system will automatically:
-1. Fetch the F&O stock list (NSE API with fallback)
-2. Download OHLCV data for 110+ securities via yfinance
-3. Compute all volatility estimators, technicals, and regime metrics
-4. Run BSM + Monte Carlo analysis for every security
-5. Present conviction-scored recommendations
-
-**No CSV files, no manual data — everything is auto-fetched.**
-
----
-
-## Architecture
-
-```
-┌──────────────────────────────────────────────┐
-│  L7: Signal Generator                        │
-│  Unified Conviction · Ensemble POP · Ranking │
-├──────────────────────────────────────────────┤
-│  L6: Strategy Optimizer                      │
-│  10 Strategies · Kelly Criterion · Sizing    │
-├──────────────────────────────────────────────┤
-│  L5: Regime Intelligence                     │
-│  HMM · CUSUM · Stability · Transitions       │
-├──────────────────────────────────────────────┤
-│  L4: Pricing Engine                          │
-│  BSM · Greeks (9) · Risk Score               │
-├──────────────────────────────────────────────┤
-│  L3: Volatility Engine                       │
-│  C2C · Parkinson · GK · YZ · GARCH · VRP    │
-├──────────────────────────────────────────────┤
-│  L2: Technical Analysis                      │
-│  RSI · ATR · MAs · Volume · PCR Proxy        │
-├──────────────────────────────────────────────┤
-│  L1: Data Ingestion                          │
-│  yfinance · NSE API · Cache · Validation     │
-└──────────────────────────────────────────────┘
 ```
 
 ## Key Formulas
 
-### Volatility Estimators (§3.2)
-
-- **Close-to-Close:** `σ = std(ln(Ct/Ct-1)) × √252`
-- **Parkinson:** `σ = √(Σ(ln(H/L))² / (4n·ln2)) × √252`
-- **Garman-Klass:** `σ = √(0.5·u² - (2ln2-1)·c² + 0.5·d²) × √252`
-- **Yang-Zhang:** `σ = √(σ²_overnight + k·σ²_close-open + (1-k)·σ²_GK) × √252`
-- **Composite:** Weighted average (YZ: 40%, GK: 25%, Park: 20%, C2C: 15%)
-
-### Conviction Scoring (§9.1)
-
-```
-Conviction = w_r·Regime_Alignment + w_p·POP + w_e·EV_norm
-           + w_s·Sharpe_norm + w_st·Stability + w_iv·IV_norm
-```
-
-### Ensemble POP (§9.2)
-
-```
-POP_ensemble = (w_bsm·POP_bsm + w_mc·POP_mc) / (w_bsm + w_mc)
-where w_i = 1/RMSE_i²  (inverse-variance weighting)
-```
-
----
-
-## UI Tabs
-
-| Tab | Function |
-|-----|----------|
-| **⚡ Trade Radar** | Top 9 opportunities as premium cards with conviction scores |
-| **🔬 Deep Analysis** | Full strategy teardown: payoff diagrams, Greeks, vol estimators, position sizing |
-| **📊 Rankings** | Complete sortable data table with all metrics |
-| **📐 Probability Lab** | Monte Carlo distributions, sample paths, BSM Greeks chain |
-
----
-
-## Configuration
-
-All parameters are configurable via the sidebar:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| Expiry Date | Next Thursday | Calendar picker with NSE weekly expiry suggestions |
-| Strike Gap | ₹50 | Strike price increment |
-| Capital | ₹5,00,000 | Portfolio capital for Kelly sizing |
-| Min IV Percentile | 20% | Filter threshold |
-| Min Conviction | 30 | Minimum conviction score |
-
----
-
-## Technical Specifications
-
-| Spec | Value |
-|------|-------|
-| Risk-free rate | 7% (India govt bonds) |
-| MC paths | 10,000 (5,000 + 5,000 antithetic) |
-| GARCH params | ω=5e-6, α=0.10, β=0.85 |
-| Kelly safety | Half-Kelly × confidence, 25% cap |
-| Vol estimator weights | YZ:40%, GK:25%, Park:20%, C2C:15% |
-| VRP range | 8%–18% (regime-adaptive) |
-| Regime states | 6 vol × 5 trend = 30 combinations |
-| Data source | yfinance (auto-fetch) |
-| UI framework | Streamlit |
-| Charts | Plotly (dark theme) |
-
----
+**Sharpe** (clamped): `clamp(EV/σ, -5, 5)` — returns 0 if σ < 0.01
+**Conviction** (§9.1): `20%×RA + 25%×POP + 15%×(EV/MaxProfit) + 20%×Sharpe + 10%×Stability + 10%×IV`
+**Ensemble POP** (§9.2): Inverse-variance weighted BSM+MC fusion (MC gets ~2.56× weight)
+**SPAN Margin**: `max(0.15×S, 2σ_monthly)` per lot
 
 ## License
 
-MIT License — see [LICENSE](LICENSE)
-
----
-
-## Disclaimer
-
-VAAYDO is a research and analysis tool. It does not constitute financial advice. Options trading involves substantial risk of loss. Past performance does not guarantee future results. Always consult a qualified financial advisor before making investment decisions.
-
----
-
-**Hemrek Capital** · Built with mathematical precision
+MIT License · Copyright 2026 Hemrek Capital
