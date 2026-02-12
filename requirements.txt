@@ -5,3 +5,4 @@ plotly
 pandas_ta
 pytz
 scipy
+yfinance
