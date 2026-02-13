@@ -445,13 +445,17 @@ class BSM:
 
     @classmethod
     def call(cls, S, K, T, r, σ):
+        if any(np.isnan(x) for x in [S, K, T, σ] if isinstance(x, (int, float))): return 0.0
         if T <= 0: return max(S - K, 0)
+        if σ <= 0 or K <= 0 or S <= 0: return max(S - K, 0)
         d1, d2 = cls._d(S, K, T, r, σ)
         return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
 
     @classmethod
     def put(cls, S, K, T, r, σ):
+        if any(np.isnan(x) for x in [S, K, T, σ] if isinstance(x, (int, float))): return 0.0
         if T <= 0: return max(K - S, 0)
+        if σ <= 0 or K <= 0 or S <= 0: return max(K - S, 0)
         d1, d2 = cls._d(S, K, T, r, σ)
         return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
 
@@ -503,7 +507,7 @@ class MC:
     @staticmethod
     def terminal_prices(S, σ, T, n=5000):
         """GBM with antithetic variates → 2n terminal prices"""
-        if T <= 0 or σ <= 0: return np.full(2*n, S)
+        if T <= 0 or σ <= 0 or np.isnan(S) or np.isnan(σ) or np.isnan(T): return np.full(2*n, max(S, 0) if not np.isnan(S) else 100)
         steps = max(int(T * 252), 1); dt = T / steps
         z = np.random.standard_normal((n, steps))
         z_full = np.vstack([z, -z])
@@ -617,13 +621,25 @@ def kelly(p, w, l, confidence=1.0):
     k = (b * p - (1 - p)) / b
     return max(0, min(k * 0.5 * max(0.5, min(confidence, 1.0)), 0.25))
 
+def auto_gap(price):
+    """Auto-detect strike gap based on stock price (NSE conventions)"""
+    if price < 50: return 2.5
+    if price < 100: return 5
+    if price < 250: return 10
+    if price < 500: return 25
+    if price < 1500: return 50
+    if price < 5000: return 100
+    if price < 10000: return 200
+    return 500
+
 def snap(x, g):
     return round(x / g) * g
 
 def clamp_sharpe(ev, std):
     """FIX #3: Clamp Sharpe to [-5, 5] to prevent explosion"""
-    if std < 0.01: return 0.0
-    return max(-5.0, min(5.0, ev / std))
+    if std < 0.01 or np.isnan(ev) or np.isnan(std): return 0.0
+    result = ev / std
+    return max(-5.0, min(5.0, result)) if not np.isnan(result) else 0.0
 
 def clamp_rr(nc, ml):
     """FIX #6: Clamp risk-reward to [0, 50]"""
@@ -640,7 +656,8 @@ def ensemble_pop(pop_bsm, pop_mc):
     """§9.2: Inverse-variance weighted fusion"""
     w_bsm = 1.0 / (0.08**2)  # BSM RMSE ~8%
     w_mc = 1.0 / (0.05**2)   # MC RMSE ~5%
-    return (w_bsm * pop_bsm + w_mc * pop_mc) / (w_bsm + w_mc)
+    result = (w_bsm * pop_bsm + w_mc * pop_mc) / (w_bsm + w_mc)
+    return result if not np.isnan(result) else 0.5
 
 def conviction_unified(ra, pop, ev_ratio, sharpe, stability, iv_norm):
     """§9.1: Unified Conviction — FIX #5: ev_ratio is EV/MaxProfit, not absolute ₹"""
@@ -649,7 +666,8 @@ def conviction_unified(ra, pop, ev_ratio, sharpe, stability, iv_norm):
     sh_n = max(0, min(1, (sharpe + 2) / 5))           # maps [-2, 3] → [0, 1]
     raw = (w['ra'] * ra + w['pop'] * pop + w['ev'] * ev_n +
            w['sharpe'] * sh_n + w['stab'] * stability + w['iv'] * iv_norm)
-    return max(0, min(100, raw * 100))
+    result = raw * 100
+    return max(0, min(100, result)) if not np.isnan(result) else 30.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -673,7 +691,11 @@ def compute_full_greeks(S, T, r, iv, legs_spec):
 
 def score_strategy(name, stock, settings):
     S = stock['price']; iv = stock['ATMIV'] / 100; ivp = stock['IVPercentile']
-    T = settings['dte'] / 365; r = BSM.R; g = settings['gap']
+    # NaN guard
+    if any(np.isnan(v) for v in [S, iv, ivp] if isinstance(v, (int, float))):
+        return None
+    if S <= 0 or iv <= 0: return None
+    T = settings['dte'] / 365; r = BSM.R; g = auto_gap(S)
     rsi = stock.get('rsi_daily', 50); adx = stock.get('adx', 20)
     kalman_t = stock.get('kalman_trend', 0)
     garch_p = stock.get('GARCH_Persistence', 0.95)
@@ -1002,16 +1024,23 @@ CL = {'gold':'#FFC300','bg':'#1A1A1A','border':'#2A2A2A','text':'#EAEAEA','muted
       'green':'#10b981','red':'#ef4444','amber':'#f59e0b','cyan':'#06b6d4','purple':'#a855f7'}
 
 def fmt(v):
+    """Format number in Indian comma style: ₹1,23,456.78"""
     try:
-        v = float(v); neg = v < 0; v = abs(v); ip = int(v)
-        s = str(ip)[::-1]; g_parts = []
+        v = float(v)
+        if np.isnan(v) or np.isinf(v): return '₹0.00'
+        neg = v < 0; v = abs(v)
+        ip = int(v); dp = v - ip
+        s = str(ip)
         if len(s) > 3:
-            g_parts.append(s[:3]); s = s[3:]
-            while s: g_parts.append(s[:2]); s = s[2:]
-            f = ','.join(g_parts[::-1])
-        else: f = s[::-1]
-        dp = round(abs(float(v)) - ip, 2)
-        if dp > 0: f += f"{dp:.2f}"[1:]
+            last3 = s[-3:]; rest = s[:-3]
+            parts = []
+            while rest:
+                parts.insert(0, rest[-2:]); rest = rest[:-2]
+            parts.append(last3)
+            f = ','.join(parts)
+        else:
+            f = s
+        if dp > 0.005: f += f"{dp:.2f}"[1:]
         return f"{'-' if neg else ''}₹{f}"
     except: return str(v)
 
@@ -1102,8 +1131,7 @@ def main():
         dte = (expiry_date - today).days
         st.caption(f"**{dte} days** to expiry ({expiry_date.strftime('%d %b %Y')})")
 
-        strike_gap = st.selectbox("Strike Gap (₹)", [25, 50, 100, 200, 500], index=1)
-        capital = st.number_input("Capital (₹)", value=500000, step=50000, format="%d")
+
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         st.markdown('<div class="stitle">🎯 Filters</div>', unsafe_allow_html=True)
@@ -1121,10 +1149,10 @@ def main():
             <strong>Sharpe:</strong> Clamped [-5, 5]<br>
             <strong>Strategies:</strong> 10 Active</p></div>""", unsafe_allow_html=True)
 
-    settings = {'dte': max(dte, 1), 'gap': strike_gap, 'capital': capital}
+    settings = {'dte': max(dte, 1)}
 
     # ── HEADER ──
-    st.markdown(f"""<div class="hdr"><div class="badge">v{VERSION}</div>
+    st.markdown(f"""<div class="hdr">
         <h1>VAAYDO — FnO Trade Intelligence</h1>
         <div class="tag">BSM · MC (10K Antithetic) · Multi-Estimator Vol · GARCH · Kalman · Kelly · CUSUM &nbsp;|&nbsp;
         Expiry: {expiry_date.strftime("%d %b %Y")} ({dte}D) &nbsp;|&nbsp; {datetime.now().strftime("%d %b %Y")}</div></div>""", unsafe_allow_html=True)
@@ -1145,7 +1173,11 @@ def main():
     with st.spinner("Running BSM + Monte Carlo (10K antithetic) + Kelly..."):
         all_trades = []
         for _, row in df.iterrows():
-            rd = row.to_dict(); best = None
+            rd = row.to_dict()
+            # Skip rows with NaN price or IV
+            if pd.isna(rd.get('price')) or pd.isna(rd.get('ATMIV')) or rd['price'] <= 0 or rd['ATMIV'] <= 0:
+                continue
+            best = None
             for sn in ALL_STRATS:
                 try:
                     res = score_strategy(sn, rd, settings)
@@ -1188,6 +1220,9 @@ def main():
 
     with tab1:
         st.markdown("<div style='margin-bottom:1rem;'><span style='font-size:1.1rem;font-weight:700;color:#EAEAEA;'>Top FnO Opportunities</span><span style='color:#888;font-size:0.85rem;margin-left:0.75rem;'>§9.1 Unified Conviction · Ensemble POP · Antithetic MC</span></div>", unsafe_allow_html=True)
+        # NaN-safe filter
+        filtered = [t for t in filtered if not any(np.isnan(v) for k, v in t.items() 
+                    if isinstance(v, (int, float)) and k in ('conviction_score','pop','ev','sharpe','price','ATMIV'))]
         top = filtered[:9]
         if not top:
             st.info("No trades pass filters. Lower conviction or IV percentile thresholds.")
@@ -1251,10 +1286,10 @@ def main():
             vc1, vc2 = st.columns([1, 1])
             with vc1:
                 st.markdown("<span style='font-weight:700;color:#EAEAEA;'>§3.2 Multi-Estimator Volatility</span>", unsafe_allow_html=True)
-                st.plotly_chart(vol_estimator_chart(row), use_container_width=True)
+                st.plotly_chart(vol_estimator_chart(row), width='stretch', key=f'vol_est_{sel}')
             with vc2:
                 st.markdown("<span style='font-weight:700;color:#EAEAEA;'>Expected Move Distribution</span>", unsafe_allow_html=True)
-                st.plotly_chart(em_chart(S, iv, T), use_container_width=True)
+                st.plotly_chart(em_chart(S, iv, T), width='stretch', key=f'em_{sel}')
 
             st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
             st.markdown("<span style='font-weight:700;color:#EAEAEA;'>Strategy Rankings</span><span style='color:#888;margin-left:0.75rem;font-size:0.85rem;'>All 10 strategies · Real MC · Full Greeks</span>", unsafe_allow_html=True)
@@ -1277,9 +1312,9 @@ def main():
                             cc = 'tr' if 'Sell' in l['type'] else 'tg'
                             lh += f"<tr><td class='{cc}'>{l['type']}</td><td>{fmt(l['strike'])}</td><td>{l.get('qty',1)}</td><td>{fmt(abs(l['premium']))}</td></tr>"
                         st.markdown(lh + "</table>", unsafe_allow_html=True)
-                        st.plotly_chart(payoff_chart(s, S), use_container_width=True)
+                        st.plotly_chart(payoff_chart(s, S), width='stretch', key=f'payoff_{s.name}_{rank}')
                     with ec2:
-                        st.plotly_chart(gauge(cv), use_container_width=True)
+                        st.plotly_chart(gauge(cv), width='stretch', key=f'gauge_{s.name}_{rank}')
                         st.markdown(f"""<div class='ib'><h4>Analytics</h4><p>
                             <strong>POP (BSM):</strong> <span class='mono tg'>{s.pop_bsm*100:.1f}%</span><br>
                             <strong>POP (MC):</strong> <span class='mono tg'>{s.pop_mc*100:.1f}%</span><br>
@@ -1303,12 +1338,10 @@ def main():
                             <strong>Charm:</strong> <span class='mono'>{gk.charm:+.6f}</span> &nbsp;
                             <strong>Speed:</strong> <span class='mono'>{gk.speed:+.6f}</span></p></div>""", unsafe_allow_html=True)
                         lot = row.get('lot_size', 1)
-                        lots = max(1, int(capital * s.kelly_fraction / max(s.max_loss, 1))) if s.max_loss > 0 else 1
-                        st.markdown(f"""<div class='ib' style='margin-top:0.5rem;'><h4>Position Sizing (§7.1)</h4><p>
+                        st.markdown(f"""<div class='ib' style='margin-top:0.5rem;'><h4>Sizing Info</h4><p>
                             <strong>Lot Size:</strong> <span class='mono'>{lot}</span><br>
-                            <strong>Lots:</strong> <span class='mono tgl'>{lots}</span><br>
-                            <strong>Risk:</strong> <span class='mono'>{fmt(lots * s.max_loss)}</span><br>
-                            <strong>% Capital:</strong> <span class='mono'>{lots * s.max_loss / capital * 100:.1f}%</span></p></div>""", unsafe_allow_html=True)
+                            <strong>Kelly %:</strong> <span class='mono tgl'>{s.kelly_fraction*100:.1f}%</span><br>
+                            <strong>Strike Gap:</strong> <span class='mono'>₹{auto_gap(S):.0f}</span></p></div>""", unsafe_allow_html=True)
 
     with tab3:
         if filtered:
@@ -1320,11 +1353,11 @@ def main():
             # Round numeric columns for readability
             for col in ['conviction_score','ev','sharpe','kelly_frac','risk_score','stability','net_credit','max_profit','max_loss']:
                 if col in display.columns:
-                    display[col] = display[col].round(2)
+                    display[col] = pd.to_numeric(display[col], errors='coerce').fillna(0).round(2)
             if 'pop' in display.columns:
                 display['pop'] = (display['pop'] * 100).round(1)
             display.columns = [c.replace('_', ' ').title() for c in display.columns]
-            st.dataframe(display, use_container_width=True, height=600)
+            st.dataframe(display, width='stretch', height=600)
         else:
             st.info("No trades pass current filters.")
 
@@ -1344,7 +1377,7 @@ def main():
             fig.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor=CL['bg'], height=350, margin=dict(l=10, r=10, t=30, b=30),
                 xaxis=dict(showgrid=True, gridcolor=CL['border'], title='Terminal Price', tickformat=','), yaxis=dict(showgrid=True, gridcolor=CL['border'], title='Freq'),
                 font=dict(family='Inter', color=CL['text']), showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch', key='mc_hist')
             st.markdown(f"""<div class='ib'><h4>MC Stats (10K antithetic paths)</h4><p>
                 <strong>Mean:</strong> <span class='mono'>{fmt(np.mean(term))}</span> | <strong>Median:</strong> <span class='mono'>{fmt(np.median(term))}</span><br>
                 <strong>5th:</strong> <span class='mono tr'>{fmt(np.percentile(term,5))}</span> | <strong>95th:</strong> <span class='mono tg'>{fmt(np.percentile(term,95))}</span><br>
@@ -1362,15 +1395,16 @@ def main():
             fig2.update_layout(template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor=CL['bg'], height=350, margin=dict(l=10, r=10, t=30, b=30),
                 xaxis=dict(showgrid=True, gridcolor=CL['border'], title='Days'), yaxis=dict(showgrid=True, gridcolor=CL['border'], title='Price', tickformat=','),
                 font=dict(family='Inter', color=CL['text']), showlegend=False)
-            st.plotly_chart(fig2, use_container_width=True)
-            strikes = [snap(lS + i * strike_gap, strike_gap) for i in range(-3, 4)]
+            st.plotly_chart(fig2, width='stretch', key='mc_paths')
+            lg = auto_gap(lS)
+            strikes = [snap(lS + i * lg, lg) for i in range(-3, 4)]
             gdata = []
             for K in strikes:
                 cg = BSM.greeks(lS, K, lT, BSM.R, liv, 'call'); pg = BSM.greeks(lS, K, lT, BSM.R, liv, 'put')
                 gdata.append({'Strike': fmt(K), 'C.Δ': f"{cg.delta:.3f}", 'P.Δ': f"{pg.delta:.3f}", 'Γ': f"{cg.gamma:.5f}",
                              'C.Θ': f"{cg.theta:.2f}", 'P.Θ': f"{pg.theta:.2f}", 'ν': f"{cg.vega:.2f}",
                              'Vanna': f"{cg.vanna:.4f}", 'Volga': f"{cg.volga:.4f}"})
-            st.dataframe(pd.DataFrame(gdata), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(gdata), width='stretch', hide_index=True)
 
 
 if 'sel' not in st.session_state: st.session_state.sel = None
