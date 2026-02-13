@@ -2,7 +2,7 @@
 
 **Version 3.1.0** · Hemrek Capital
 
-World's first god-tier options trading intelligence system. 20 mathematical engines, 10 strategy evaluators, ensemble probability fusion, regime-aware conviction scoring.
+20 mathematical engines, 10 strategy evaluators, ensemble probability fusion, regime-aware conviction scoring.
 
 ---
 
