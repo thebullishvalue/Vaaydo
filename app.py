@@ -28,7 +28,7 @@ MATHEMATICAL ARSENAL (20 Engines):
 20. SPAN Margin Estimation — Realistic max loss for unlimited-risk strategies
 
 STRATEGY UNIVERSE (10 Active):
- Short Strangle · Short Straddle · Short Iron Condor · Iron Butterfly
+ Short Strangle · Short Straddle · Iron Condor · Iron Butterfly
  Bull Put Spread · Bear Call Spread · Calendar Spread
  Jade Lizard · Broken Wing Butterfly · Ratio Spread
 
@@ -714,7 +714,7 @@ def conviction_unified(ra, pop, ev_ratio, sharpe, stability, iv_norm):
 # L6: STRATEGY ENGINE — All 10 with real MC, full Greeks, proper payoffs
 # ═══════════════════════════════════════════════════════════════════════════════
 
-ALL_STRATS = ['Short Strangle','Short Straddle','Short Iron Condor','Iron Butterfly',
+ALL_STRATS = ['Short Strangle','Short Straddle','Iron Condor','Iron Butterfly',
               'Bull Put Spread','Bear Call Spread','Calendar Spread',
               'Jade Lizard','Broken Wing Butterfly','Ratio Spread']
 
@@ -818,7 +818,7 @@ def score_strategy(name, stock, settings):
                 conviction_score=cv, optimal_dte=21 if ivp>70 else 30, risk_score=rs,
                 stability_score=stab, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
 
-        elif name == 'Short Iron Condor':
+        elif name == 'Iron Condor':
             # Short strikes: 1-2 gaps OTM, wings 2 further gaps
             n_short = max(1, round(em / g)) if g > 0 else 1
             sc = snap(S + n_short * g, g)
@@ -1236,7 +1236,7 @@ def landing_page():
         <div style='display:grid; grid-template-columns:repeat(5,1fr); gap:0.5rem; text-align:center;'>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Short Strangle</span></div>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Short Straddle</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Short Iron Condor</span></div>
+            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Iron Condor</span></div>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Iron Butterfly</span></div>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Bull Put Spread</span></div>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Bear Call Spread</span></div>
@@ -1324,12 +1324,6 @@ def main():
 
     settings = {'dte': max(dte, 1)}
 
-    # ── HEADER ──
-    st.markdown(f"""<div class="hdr">
-        <h1>VAAYDO — FnO Trade Intelligence</h1>
-        <div class="tag">BSM · MC (10K Antithetic) · Multi-Estimator Vol · GARCH · Kalman · Kelly · CUSUM &nbsp;|&nbsp;
-        Expiry: {expiry_date.strftime("%d %b %Y")} ({dte}D) &nbsp;|&nbsp; {datetime.now().strftime("%d %b %Y")}</div></div>""", unsafe_allow_html=True)
-
     # Track expiry for button label
     st.session_state.last_expiry = str(expiry_date)
 
@@ -1343,7 +1337,7 @@ def main():
         st.error(f"Data fetch failed: {data_status}")
         st.info("Ensure network access to `*.yahoo.com`. Check firewall / proxy settings.")
         return
-    st.caption(f"🔌 {sym_status} → {data_status}")
+    st.toast(f"🔌 {sym_status} → {data_status}", icon="✅")
 
     # ── COMPUTE STRATEGIES ──
     with st.spinner("Running BSM + Monte Carlo (10K antithetic) + Kelly..."):
@@ -1365,7 +1359,13 @@ def main():
                 tr = detect_trend(rd['price'], rd.get('ma20_daily', rd['price']),
                     rd.get('ma50_daily', rd['price']), rd.get('rsi_daily', 50),
                     rd.get('% change', 0), rd.get('adx', 20), rd.get('kalman_trend', 0))
-                all_trades.append({**rd, 'strategy': best.name, 'conviction_score': best.conviction_score,
+                # Dynamic strategy labeling
+                _sname = best.name
+                if _sname == 'Iron Condor':
+                    _sname = 'Short Iron Condor' if best.net_credit > 0 else 'Long Iron Condor'
+                elif _sname == 'Iron Butterfly':
+                    _sname = 'Short Iron Butterfly' if best.net_credit > 0 else 'Long Iron Butterfly'
+                all_trades.append({**rd, 'strategy': _sname, 'conviction_score': best.conviction_score,
                     'pop': best.pop_ensemble, 'ev': best.expected_value, 'sharpe': best.sharpe_ratio,
                     'kelly_frac': best.kelly_fraction, 'net_credit': best.net_credit,
                     'max_profit': best.max_profit, 'max_loss': best.max_loss,
