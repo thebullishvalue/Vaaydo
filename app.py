@@ -236,7 +236,7 @@ LOT_SIZES = {
     'INDHOTEL':700,'INOXWIND':3000,'JINDALSTEL':250,'LICI':700,'MANKIND':200,
     'MAZDOCK':200,'PHOENIXLTD':300,'SHREECEM':25,'SHREECEM':25,'TRENT':325,
     'UNOMINDA':400,'360ONE':300,'ADANIENSOL':400,'ASHOKLEY':3500,'GMRAIRPORT':6000,
-    'HINDZINC':850,'MARICO':800,'SWIGGY':2500}
+    'HINDZINC':850,'MARICO':800,'SWIGGY':2500,'INDUSTOWER':2200,'CANBK':2700,'ASIANPAINT':200,'PIDILITIND':375,'SAIL':2600,'PAYTM':1250}
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_fno_symbols():
@@ -647,7 +647,14 @@ def regime_vol_weight(vr):
 # KELLY + CONVICTION + HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def kelly(p, w, l, confidence=1.0):
+def kelly(p, w, l, confidence=1.0, mc_ev=None, mc_std=None):
+    """Kelly Criterion — MC-aware for option selling strategies.
+    If mc_ev/mc_std provided, uses continuous Kelly: f* = μ/σ² (scaled).
+    Otherwise falls back to binary Kelly."""
+    if mc_ev is not None and mc_std is not None and mc_std > 0.01:
+        # Continuous Kelly: f* = EV / variance, half-Kelly scaled
+        k = mc_ev / (mc_std ** 2)
+        return max(0, min(k * 0.5 * max(0.5, min(confidence, 1.0)), 0.25))
     if l <= 0 or w <= 0: return 0.0
     b = w / abs(l)
     k = (b * p - (1 - p)) / b
@@ -782,7 +789,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=pK-nc, breakeven_upper=cK+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,nc,ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e, nc, ml, stab, mc_ev=ev, mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=45 if ivp>70 else 30, risk_score=rs,
                 stability_score=stab, width=cK-pK, net_credit=nc,
                 risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
@@ -807,7 +814,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=K-nc, breakeven_upper=K+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,nc,ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e, nc, ml, stab, mc_ev=ev, mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=21 if ivp>70 else 30, risk_score=rs,
                 stability_score=stab, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
 
@@ -847,7 +854,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=sp-nc, breakeven_upper=sc+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,nc,ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e, nc, ml, stab, mc_ev=ev, mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=45, risk_score=rs, stability_score=stab,
                 width=w_spread, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
 
@@ -876,7 +883,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=K-nc, breakeven_upper=K+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,nc,ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e, nc, ml, stab, mc_ev=ev, mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=30, risk_score=rs, stability_score=stab,
                 width=ww, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
 
@@ -908,7 +915,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=sp_k-nc, breakeven_upper=S*10,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,nc,ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e, nc, ml, stab, mc_ev=ev, mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=30, risk_score=rs, stability_score=stab,
                 width=sp_k-lp_k, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
 
@@ -939,7 +946,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=0, breakeven_upper=sc_k+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,nc,ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e, nc, ml, stab, mc_ev=ev, mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=30, risk_score=rs, stability_score=stab,
                 width=lc_k-sc_k, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
 
@@ -969,7 +976,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=sp_k-nc, breakeven_upper=cK+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,nc,ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e, nc, ml, stab, mc_ev=ev, mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=35, risk_score=rs, stability_score=stab,
                 width=sp_k-lp_k, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
 
@@ -1012,7 +1019,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=K-mp, breakeven_upper=K+mp,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,mp,ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,mp,ml,stab,mc_ev=ev,mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=45, risk_score=rs, stability_score=stab,
                 net_credit=-nd, risk_reward=clamp_rr(mp,ml), regime_alignment=ra)
 
@@ -1053,7 +1060,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=lo, breakeven_upper=hi,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,max(mp,1),ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,max(mp,1),ml,stab,mc_ev=ev,mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=45, risk_score=rs, stability_score=stab,
                 width=hi-lo, net_credit=nc, risk_reward=clamp_rr(mp,ml), regime_alignment=ra)
 
@@ -1087,7 +1094,7 @@ def score_strategy(name, stock, settings):
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=lK, breakeven_upper=2*sK-lK+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
-                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,max(mp,1),ml,stab), net_greeks=ng,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,max(mp,1),ml,stab,mc_ev=ev,mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=30, risk_score=rs, stability_score=stab,
                 width=sK-lK, net_credit=nc, risk_reward=clamp_rr(mp,ml), regime_alignment=ra)
 
@@ -1285,19 +1292,15 @@ def main():
 
         st.markdown('<div style="height:0.5rem;"></div>', unsafe_allow_html=True)
 
-        # Run Analysis button
-        run_clicked = st.button("⚡ Run Analysis", type="primary", use_container_width=True)
-        if run_clicked:
-            st.session_state.analysis_running = True
-            st.session_state.analysis_expiry = expiry_date.isoformat()
-
-        # Refresh button (only show when analysis has been run)
-        if st.session_state.get('analysis_running', False):
-            if st.button("🔄 Refresh Data", use_container_width=True):
-                st.cache_data.clear()
-                st.session_state.analysis_running = True
-                st.session_state.analysis_expiry = expiry_date.isoformat()
-                st.rerun()
+        # Single smart button: "Run Analysis" when new/changed expiry, "Refresh Data" when same
+        _has_run = st.session_state.get('analysis_run', False)
+        _expiry_changed = st.session_state.get('last_expiry') != str(expiry_date)
+        _btn_label = "🚀 Run Analysis" if (not _has_run or _expiry_changed) else "🔄 Refresh Data"
+        if st.button(_btn_label, use_container_width=True, type="primary"):
+            st.session_state.analysis_run = True
+            st.session_state.last_expiry = str(expiry_date)
+            st.cache_data.clear()
+            st.rerun()
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         st.markdown('<div class="stitle">🎯 Filters</div>', unsafe_allow_html=True)
@@ -1315,16 +1318,11 @@ def main():
             <strong>Strategies:</strong> 10 Active</p></div>""", unsafe_allow_html=True)
 
     # ── LANDING PAGE (before analysis runs) ──
-    if not st.session_state.get('analysis_running', False):
+    if not st.session_state.get('analysis_run', False):
         landing_page()
         return
 
     settings = {'dte': max(dte, 1)}
-
-    # ── SESSION STATE ──
-    if 'analysis_run' not in st.session_state: st.session_state.analysis_run = False
-    if 'cached_df' not in st.session_state: st.session_state.cached_df = None
-    if 'cached_trades' not in st.session_state: st.session_state.cached_trades = None
 
     # ── HEADER ──
     st.markdown(f"""<div class="hdr">
@@ -1332,46 +1330,8 @@ def main():
         <div class="tag">BSM · MC (10K Antithetic) · Multi-Estimator Vol · GARCH · Kalman · Kelly · CUSUM &nbsp;|&nbsp;
         Expiry: {expiry_date.strftime("%d %b %Y")} ({dte}D) &nbsp;|&nbsp; {datetime.now().strftime("%d %b %Y")}</div></div>""", unsafe_allow_html=True)
 
-    # ── LANDING PAGE (before analysis) ──
-    if not st.session_state.analysis_run:
-        st.markdown("""<div style="text-align:center; padding:3rem 1rem;">
-            <div style="font-size:4rem; margin-bottom:1rem;">वायदो</div>
-            <div style="font-size:1.3rem; color:#FFC300; font-weight:700; margin-bottom:0.5rem;">FnO Trade Intelligence</div>
-            <div style="color:#888; max-width:600px; margin:0 auto 2rem; line-height:1.8; font-size:0.9rem;">
-                Institutional-grade options strategy engine.<br>
-                Select an expiry date in the sidebar and run analysis to scan 200+ F&O securities<br>
-                with 20 mathematical engines and 10 strategy evaluators.</div>
-        </div>""", unsafe_allow_html=True)
-
-        c1,c2,c3,c4 = st.columns(4)
-        with c1: st.markdown("<div class='mc info'><h4>Engines</h4><h2>20</h2><div class='sub'>BSM · MC · GARCH · Kelly · Kalman</div></div>", unsafe_allow_html=True)
-        with c2: st.markdown("<div class='mc gold'><h4>Strategies</h4><h2>10</h2><div class='sub'>Strangle · IC · BPS · BWB · more</div></div>", unsafe_allow_html=True)
-        with c3: st.markdown("<div class='mc ok'><h4>Greeks</h4><h2>9</h2><div class='sub'>Δ Γ Θ ν ρ Vanna Volga Charm Speed</div></div>", unsafe_allow_html=True)
-        with c4: st.markdown(f"<div class='mc warn'><h4>Expiry</h4><h2>{dte}D</h2><div class='sub'>{expiry_date.strftime('%d %b %Y')}</div></div>", unsafe_allow_html=True)
-
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
-        # Engine grid
-        st.markdown("""<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr)); gap:0.75rem; margin:1rem 0;">
-            <div class='ib'><h4>🎯 Pricing & Greeks</h4><p style='font-size:0.8rem;color:#888;line-height:1.6;'>
-                Black-Scholes-Merton full pricing<br>9 Greeks: Δ Γ Θ ν ρ + Higher-order<br>Monte Carlo 10K antithetic paths</p></div>
-            <div class='ib'><h4>📊 Volatility Stack</h4><p style='font-size:0.8rem;color:#888;line-height:1.6;'>
-                Multi-Estimator: C2C · Parkinson · GK · YZ<br>GARCH(1,1) conditional variance<br>Volatility Risk Premium (VRP)</p></div>
-            <div class='ib'><h4>🔬 Regime Detection</h4><p style='font-size:0.8rem;color:#888;line-height:1.6;'>
-                6-State Vol + 5-State Trend regimes<br>ADX trend strength · Kalman filter<br>CUSUM structural break detection</p></div>
-            <div class='ib'><h4>⚡ Scoring & Sizing</h4><p style='font-size:0.8rem;color:#888;line-height:1.6;'>
-                Ensemble POP (BSM+MC fusion)<br>Unified Conviction scoring<br>Kelly Criterion position sizing</p></div>
-        </div>""", unsafe_allow_html=True)
-
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-
-        # Run Analysis button
-        bc1, bc2, bc3 = st.columns([1,2,1])
-        with bc2:
-            if st.button("🚀 Run Analysis", use_container_width=True, type="primary"):
-                st.session_state.analysis_run = True
-                st.rerun()
-        return
+    # Track expiry for button label
+    st.session_state.last_expiry = str(expiry_date)
 
     # ── DATA FETCH ──
     with st.spinner("Fetching F&O universe..."):
@@ -1428,18 +1388,6 @@ def main():
     with c3: st.markdown(f"<div class='mc {'ok' if avg_iv > 55 else 'warn' if avg_iv > 35 else 'info'}'><h4>Avg IV Percentile</h4><h2>{avg_iv:.0f}%</h2><div class='sub'>GARCH avg: {df['GARCH_Vol'].mean():.1f}%</div></div>", unsafe_allow_html=True)
     with c4: st.markdown(f"<div class='mc {'ok' if avg_pcr > 1.2 else 'bad' if avg_pcr < 0.8 else 'info'}'><h4>Avg PCR</h4><h2>{avg_pcr:.2f}</h2><div class='sub'>{'Bullish' if avg_pcr > 1.2 else 'Bearish' if avg_pcr < 0.8 else 'Neutral'} bias</div></div>", unsafe_allow_html=True)
     with c5: st.markdown(f"<div class='mc {'bad' if cusum_alerts > 5 else 'warn' if cusum_alerts > 0 else 'ok'}'><h4>CUSUM Alerts</h4><h2>{cusum_alerts}</h2><div class='sub'>Structural breaks</div></div>", unsafe_allow_html=True)
-
-    # Refresh button
-    rc1, rc2, rc3 = st.columns([5,1,1])
-    with rc2:
-        if st.button("🔄 Refresh", use_container_width=True):
-            st.session_state.analysis_run = True
-            st.cache_data.clear()
-            st.rerun()
-    with rc3:
-        if st.button("🏠 Home", use_container_width=True):
-            st.session_state.analysis_run = False
-            st.rerun()
 
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
@@ -1636,5 +1584,6 @@ def main():
 
 
 if 'sel' not in st.session_state: st.session_state.sel = None
-if 'analysis_running' not in st.session_state: st.session_state.analysis_running = False
+if 'analysis_run' not in st.session_state: st.session_state.analysis_run = False
+if 'last_expiry' not in st.session_state: st.session_state.last_expiry = None
 if __name__ == "__main__": main()
