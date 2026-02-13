@@ -28,7 +28,7 @@ MATHEMATICAL ARSENAL (20 Engines):
 20. SPAN Margin Estimation — Realistic max loss for unlimited-risk strategies
 
 STRATEGY UNIVERSE (10 Active):
- Short Strangle · Short Straddle · Iron Condor · Iron Butterfly
+ Short Strangle · Short Straddle · Short Iron Condor · Iron Butterfly
  Bull Put Spread · Bear Call Spread · Calendar Spread
  Jade Lizard · Broken Wing Butterfly · Ratio Spread
 
@@ -714,7 +714,7 @@ def conviction_unified(ra, pop, ev_ratio, sharpe, stability, iv_norm):
 # L6: STRATEGY ENGINE — All 10 with real MC, full Greeks, proper payoffs
 # ═══════════════════════════════════════════════════════════════════════════════
 
-ALL_STRATS = ['Short Strangle','Short Straddle','Iron Condor','Iron Butterfly',
+ALL_STRATS = ['Short Strangle','Short Straddle','Short Iron Condor','Iron Butterfly',
               'Bull Put Spread','Bear Call Spread','Calendar Spread',
               'Jade Lizard','Broken Wing Butterfly','Ratio Spread']
 
@@ -818,7 +818,7 @@ def score_strategy(name, stock, settings):
                 conviction_score=cv, optimal_dte=21 if ivp>70 else 30, risk_score=rs,
                 stability_score=stab, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
 
-        elif name == 'Iron Condor':
+        elif name == 'Short Iron Condor':
             # Short strikes: 1-2 gaps OTM, wings 2 further gaps
             n_short = max(1, round(em / g)) if g > 0 else 1
             sc = snap(S + n_short * g, g)
@@ -1236,7 +1236,7 @@ def landing_page():
         <div style='display:grid; grid-template-columns:repeat(5,1fr); gap:0.5rem; text-align:center;'>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Short Strangle</span></div>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Short Straddle</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Iron Condor</span></div>
+            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Short Iron Condor</span></div>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Iron Butterfly</span></div>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Bull Put Spread</span></div>
             <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Bear Call Spread</span></div>
