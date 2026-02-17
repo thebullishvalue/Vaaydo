@@ -1304,8 +1304,8 @@ def main():
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         st.markdown('<div class="stitle">🎯 Filters</div>', unsafe_allow_html=True)
-        min_ivp = st.slider("Min IV Percentile", 0, 100, 20)
-        min_cv = st.slider("Min Conviction", 0, 100, 30)
+        min_ivp = st.slider("Min IV Percentile", 0, 100, 90)
+        min_cv = st.slider("Min Conviction", 0, 100, 70)
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         st.markdown(f"""<div class='ib'><p style='font-size:0.72rem; margin:0; color:#888; line-height:1.5;'>
