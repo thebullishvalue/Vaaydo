@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  VAAYDO (वायदो) — FnO Trade Intelligence                               ║
+║  VAAYDO (वायदो) — FnO Trade Intelligence v3.3                           ║
 ║  World's First God-Tier Options Trading Intelligence System             ║
 ║  Version 3.1.0 | Hemrek Capital                                        ║
 ╚══════════════════════════════════════════════════════════════════════════╝
@@ -707,14 +707,15 @@ def ensemble_pop(pop_bsm, pop_mc):
     result = (w_bsm * pop_bsm + w_mc * pop_mc) / (w_bsm + w_mc)
     return result if not np.isnan(result) else 0.5
 
-def conviction_unified(ra, pop, ev_ratio, sharpe, stability, iv_norm):
-    """§9.1: Unified Conviction — FIX #5: ev_ratio is EV/MaxProfit, not absolute ₹"""
-    w = {'ra': 0.20, 'pop': 0.25, 'ev': 0.15, 'sharpe': 0.20, 'stab': 0.10, 'iv': 0.10}
-    ev_n = max(0, min(1, (ev_ratio + 1) / 2))        # maps [-1, 1] → [0, 1]
-    sh_n = max(0, min(1, (sharpe + 2) / 5))           # maps [-2, 3] → [0, 1]
-    raw = (w['ra'] * ra + w['pop'] * pop + w['ev'] * ev_n +
-           w['sharpe'] * sh_n + w['stab'] * stability + w['iv'] * iv_norm)
-    result = raw * 100
+def conviction_unified(ra, pop, ev_ratio, sharpe, stability, iv_norm,
+                       prem_quality=1.0, dte_fitness=1.0, cusum_penalty=1.0):
+    ev_n = max(0, min(1, (ev_ratio + 1) / 2))
+    sh_n = max(0, min(1, (sharpe + 2) / 5))
+    pq_n = max(0, min(1, prem_quality))
+    df_n = max(0, min(1, dte_fitness))
+    raw = (0.20 * ra + 0.22 * pop + 0.12 * ev_n + 0.15 * sh_n +
+           0.08 * stability + 0.08 * iv_norm + 0.08 * pq_n + 0.07 * df_n)
+    result = raw * 100 * cusum_penalty
     return max(0, min(100, result)) if not np.isnan(result) else 30.0
 
 
@@ -785,6 +786,26 @@ STRATEGY_TYPE = {
 
 # IVP gating: skip strategies that make NO sense in current IV environment
 # Returns (should_evaluate, iv_multiplier)
+# DTE fitness: each strategy has an optimal DTE range
+DTE_RANGE = {
+    'Short Strangle':  (3, 60),   'Short Straddle':  (3, 45),
+    'Iron Condor':     (7, 60),   'Iron Butterfly':  (7, 50),
+    'Bull Put Spread': (3, 60),   'Bear Call Spread': (3, 60),
+    'Bull Call Spread': (7, 60),  'Bear Put Spread': (7, 60),
+    'Long Straddle':   (14, 90),  'Long Strangle':   (14, 90),
+    'Calendar Spread': (21, 90),  'Jade Lizard':     (7, 60),
+    'Broken Wing Butterfly': (14, 60), 'Ratio Spread': (7, 60),
+}
+
+def dte_gate(strategy_name, dte):
+    lo, hi = DTE_RANGE.get(strategy_name, (3, 90))
+    if dte < lo or dte > hi: return False, 0.0
+    mid = (lo + hi) / 2
+    span = (hi - lo) / 2
+    dist = abs(dte - mid) / max(span, 1)
+    fitness = max(0.5, 1.0 - 0.5 * dist * dist)
+    return True, fitness
+
 def ivp_gate(strategy_name, ivp):
     stype = STRATEGY_TYPE.get(strategy_name, 'HYBRID')
     if stype == 'CREDIT':
@@ -904,6 +925,24 @@ def compute_full_greeks(S, T, r, iv, legs_spec):
         net = net + g.scale(qty)
     return net
 
+
+def _compute_quality(net_credit, max_loss, max_profit, name, cusum):
+    stype = STRATEGY_TYPE.get(name, 'HYBRID')
+    bias = STRATEGY_BIAS.get(name, StrategyBias.NEUTRAL)
+    if stype == 'CREDIT':
+        _pq = min(1.0, (abs(net_credit) / max(abs(max_loss), 1)) / 0.30)
+    elif stype == 'DEBIT':
+        _pq = min(1.0, (abs(max_profit) / max(abs(max_loss), 1)) / 2.0)
+    else:
+        _pq = min(1.0, max(abs(net_credit), abs(max_profit)) / max(abs(max_loss), 1) / 0.50)
+    if cusum:
+        if bias == StrategyBias.NEUTRAL: _cp = 0.55
+        elif bias == StrategyBias.VOLATILE: _cp = 1.05
+        else: _cp = 0.85
+    else:
+        _cp = 1.0
+    return max(0.0, min(1.0, _pq)), max(0.5, min(1.1, _cp))
+
 def score_strategy(name, stock, settings, iv_mult=1.0):
     S = stock['price']; iv = stock['ATMIV'] / 100; ivp = stock['IVPercentile']
     # NaN guard
@@ -914,6 +953,10 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
     rsi = stock.get('rsi_daily', 50); adx = stock.get('adx', 20)
     kalman_t = stock.get('kalman_trend', 0)
     ivp = stock.get('IVPercentile', 50)
+    dte_val = settings['dte']
+    _dte_ok, _dte_fit = dte_gate(name, dte_val)
+    if not _dte_ok: return None
+    _cusum = stock.get('CUSUM_Alert', False)
     garch_p = stock.get('GARCH_Persistence', 0.95)
     cusum = stock.get('CUSUM_Alert', False)
     lot = stock.get('lot_size', 1)
@@ -961,7 +1004,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             ev_ratio = ev / max(nc, 0.01)
-            cv = conviction_unified(ra, pop_e, ev_ratio, sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev_ratio, sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=pK-nc, breakeven_upper=cK+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -986,7 +1030,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=K-nc, breakeven_upper=K+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1026,7 +1071,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=sp-nc, breakeven_upper=sc+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1055,7 +1101,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=K-nc, breakeven_upper=K+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1087,7 +1134,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=sp_k-nc, breakeven_upper=S*10,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1118,7 +1166,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=0, breakeven_upper=sc_k+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1134,6 +1183,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             sc_k = lc_k + max(2 * g, min_wing)  # OTM short call
             lc_p = BSM.call(S,lc_k,T,r,iv); sc_p = BSM.call(S,sc_k,T,r,iv)
             nd = lc_p - sc_p  # net debit
+            nc = -nd  # for quality computation
             if nd <= 0: return None
             mp = (sc_k - lc_k) - nd  # max profit = width - debit
             ml = nd  # max loss = debit paid
@@ -1150,7 +1200,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=lc_k+nd, breakeven_upper=sc_k,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1166,6 +1217,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             sp_k = lp_k - max(2 * g, min_wing)  # OTM short put
             lp_p = BSM.put(S,lp_k,T,r,iv); sp_p = BSM.put(S,sp_k,T,r,iv)
             nd = lp_p - sp_p  # net debit
+            nc = -nd
             if nd <= 0: return None
             mp = (lp_k - sp_k) - nd
             ml = nd
@@ -1182,7 +1234,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=sp_k, breakeven_upper=lp_k-nd,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1195,6 +1248,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             K = snap(S, g)
             cp = BSM.call(S,K,T,r,iv); pp = BSM.put(S,K,T,r,iv)
             nd = cp + pp  # total debit
+            nc = -nd
             if nd <= 0: return None
             ml = nd  # max loss = debit paid
             mp = S * 0.5  # theoretical unlimited (cap for display)
@@ -1214,7 +1268,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             # High conviction when IV is LOW (cheap options) and trend is strong or vol expanding
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(nd,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, nd, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(nd, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=K-nd, breakeven_upper=K+nd,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1231,6 +1286,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             if pK >= S: pK = snap(S - g, g)
             cp = BSM.call(S,cK,T,r,iv); pp = BSM.put(S,pK,T,r,iv)
             nd = cp + pp
+            nc = -nd
             if nd <= 0: return None
             ml = nd
             mp = S * 0.5  # theoretical unlimited
@@ -1248,7 +1304,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(nd,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, nd, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(nd, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=pK-nd, breakeven_upper=cK+nd,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1278,7 +1335,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
                 breakeven_lower=sp_k-nc, breakeven_upper=cK+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1294,6 +1352,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             fp = BSM.call(S,K,fT,r,iv)
             bp = BSM.call(S,K,bT,r,iv*0.95)  # back month lower IV (term structure)
             nd = bp - fp  # net debit
+            nc = -nd
             if nd <= 0: return None  # shouldn't happen normally
             # Max profit ≈ when stock at K at front expiry: time value diff
             # Approximate: front decays fully, back retains time value
@@ -1321,7 +1380,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=K-mp, breakeven_upper=K+mp,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1362,7 +1422,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=lo, breakeven_upper=hi,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1396,7 +1457,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
-            cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
+            _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
+            cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
                 breakeven_lower=lK, breakeven_upper=2*sK-lK+nc,
                 pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
@@ -1594,10 +1656,10 @@ def landing_page():
             <h4 style='color:#FFC300; margin:0 0 0.75rem 0;'>Scoring & Selection</h4>
             <p style='font-size:0.78rem; color:#ccc; line-height:1.7; margin:0;'>
             <span style='color:#A78BFA;'>●</span> Ensemble POP — Inverse-variance BSM+MC fusion<br>
-            <span style='color:#34D399;'>●</span> Unified Conviction — 6-factor weighted score<br>
-            <span style='color:#FBBF24;'>●</span> Sharpe Ratio — Risk-adjusted, clamped [-5, 5]<br>
-            <span style='color:#F87171;'>●</span> Regime Alignment — Vol×Trend suitability<br>
-            <span style='color:#60A5FA;'>●</span> NSE Strike Grid — Correct intervals per price</p></div>""", unsafe_allow_html=True)
+            <span style='color:#34D399;'>●</span> 9-Factor Conviction — RA·POP·EV·Sharpe·Stab·IV·PQ·DTE·CUSUM<br>
+            <span style='color:#FBBF24;'>●</span> IVP Gate — Credit/debit filtered by IV environment<br>
+            <span style='color:#F87171;'>●</span> DTE Gate — Strategy viability per time-to-expiry<br>
+            <span style='color:#60A5FA;'>●</span> CUSUM Penalty — Structural break regime detection</p></div>""", unsafe_allow_html=True)
 
     st.markdown('<div style="height:2rem;"></div>', unsafe_allow_html=True)
     st.markdown("""<div style='text-align:center; color:#666; font-size:0.75rem;'>
@@ -1643,9 +1705,9 @@ def main():
             <strong>Vol:</strong> C2C · Park · GK · YZ + VRP<br>
             <strong>Greeks:</strong> Δ Γ Θ ν ρ + Vanna Volga Charm Speed<br>
             <strong>Regime:</strong> 6-Vol × 5-Trend + ADX + Kalman<br>
-            <strong>POP:</strong> Ensemble (BSM + MC fusion)<br>
-            <strong>Sharpe:</strong> Clamped [-5, 5]<br>
-            <strong>Strategies:</strong> 14 Active (4 bias categories)</p></div>""", unsafe_allow_html=True)
+            <strong>Selection:</strong> IVP gate + DTE gate + CUSUM penalty<br>
+            <strong>Conviction:</strong> 9-factor (RA·POP·EV·Sharpe·Stab·IV·PQ·DTE·CUSUM)<br>
+            <strong>Strategies:</strong> 14 Active · 4 bias · 3 types (C/D/H)</p></div>""", unsafe_allow_html=True)
 
     # ── LANDING PAGE (before analysis runs) ──
     if not st.session_state.get('analysis_run', False):
@@ -1677,16 +1739,21 @@ def main():
             # Skip rows with NaN price or IV
             if pd.isna(rd.get('price')) or pd.isna(rd.get('ATMIV')) or rd['price'] <= 0 or rd['ATMIV'] <= 0:
                 continue
-            best = None
+            best = None; alt = None
             _ivp = rd.get('IVPercentile', 50)
             for sn in ALL_STRATS:
-                # IVP gate: skip strategies that don't suit current IV environment
                 _gate, _iv_mult = ivp_gate(sn, _ivp)
                 if not _gate: continue
+                _dte_ok, _ = dte_gate(sn, settings['dte'])
+                if not _dte_ok: continue
                 try:
                     res = score_strategy(sn, rd, settings, iv_mult=_iv_mult)
-                    if res and (best is None or res.conviction_score > best.conviction_score):
-                        best = res
+                    if res:
+                        if best is None or res.conviction_score > best.conviction_score:
+                            alt = best
+                            best = res
+                        elif alt is None or res.conviction_score > alt.conviction_score:
+                            alt = res
                 except: continue
             if best:
                 vr = detect_vol_regime(rd.get('IVPercentile', 50))
@@ -1700,12 +1767,28 @@ def main():
                 elif _sname == 'Iron Butterfly':
                     _sname = 'Short Iron Butterfly' if best.net_credit > 0 else 'Long Iron Butterfly'
                 _bias = get_bias(_sname)
+                _lot = rd.get('lot_size', 1)
+                _mp_lot = best.max_profit * _lot
+                _ml_lot = best.max_loss * _lot
+                _ev_lot = best.expected_value * _lot
+                _nc_lot = best.net_credit * _lot
+                _theta_day = best.net_greeks.theta * _lot if best.net_greeks else 0
+                _rom = (_mp_lot / max(_ml_lot, 1)) * 100
+                _alt_name = None; _alt_cv = 0
+                if alt:
+                    _an = alt.name
+                    if _an == 'Iron Condor': _an = 'Short IC' if alt.net_credit > 0 else 'Long IC'
+                    elif _an == 'Iron Butterfly': _an = 'Short IB' if alt.net_credit > 0 else 'Long IB'
+                    _alt_name = _an; _alt_cv = alt.conviction_score
                 all_trades.append({**rd, 'strategy': _sname, 'conviction_score': best.conviction_score,
                     'pop': best.pop_ensemble, 'ev': best.expected_value, 'sharpe': best.sharpe_ratio,
                     'kelly_frac': best.kelly_fraction, 'net_credit': best.net_credit,
                     'max_profit': best.max_profit, 'max_loss': best.max_loss,
                     'risk_score': best.risk_score, 'stability': best.stability_score,
-                    'vol_regime': vr.value, 'trend_regime': tr.value, '_result': best})
+                    'vol_regime': vr.value, 'trend_regime': tr.value, '_result': best,
+                    'mp_lot': _mp_lot, 'ml_lot': _ml_lot, 'ev_lot': _ev_lot, 'nc_lot': _nc_lot,
+                    'theta_day': _theta_day, 'rom_pct': _rom,
+                    'alt_strategy': _alt_name, 'alt_conviction': _alt_cv})
 
     filtered = [t for t in all_trades if t['IVPercentile'] >= min_ivp and t['conviction_score'] >= min_cv]
     filtered.sort(key=lambda x: x['conviction_score'], reverse=True)
@@ -1728,13 +1811,19 @@ def main():
     with c3: st.markdown(f"<div class='mc {'ok' if avg_iv > 55 else 'warn' if avg_iv > 35 else 'info'}'><h4>Avg IV Percentile</h4><h2>{avg_iv:.0f}%</h2><div class='sub'>GARCH avg: {df['GARCH_Vol'].mean():.1f}%</div></div>", unsafe_allow_html=True)
     with c4: st.markdown(f"<div class='mc {'ok' if avg_pcr > 1.2 else 'bad' if avg_pcr < 0.8 else 'info'}'><h4>Avg PCR</h4><h2>{avg_pcr:.2f}</h2><div class='sub'>{'Bullish' if avg_pcr > 1.2 else 'Bearish' if avg_pcr < 0.8 else 'Neutral'} bias</div></div>", unsafe_allow_html=True)
     with c5: st.markdown(f"<div class='mc {'bad' if cusum_alerts > 5 else 'warn' if cusum_alerts > 0 else 'ok'}'><h4>CUSUM Alerts</h4><h2>{cusum_alerts}</h2><div class='sub'>Structural breaks</div></div>", unsafe_allow_html=True)
-    c6, c7 = st.columns(2)
+    _top5 = filtered[:5]
+    _total_cap = sum(t.get('ml_lot', 0) for t in _top5) if _top5 else 0
+    _total_theta = sum(t.get('theta_day', 0) for t in _top5) if _top5 else 0
+    _avg_rom = sum(t.get('rom_pct', 0) for t in _top5) / max(len(_top5), 1) if _top5 else 0
+
+    c6, c7, c8, c9 = st.columns(4)
     _regime_lbl = 'CREDIT-FAVORED' if avg_iv >= 55 else ('DEBIT-FAVORED' if avg_iv <= 35 else 'MIXED')
     _regime_cls = 'gold' if avg_iv >= 55 else ('info' if avg_iv <= 35 else 'warn')
     _regime_sub = f'Avg IVP {avg_iv:.0f}% · Sell premium' if avg_iv >= 55 else (f'Avg IVP {avg_iv:.0f}% · Buy premium' if avg_iv <= 35 else f'Avg IVP {avg_iv:.0f}% · Both viable')
     with c6: st.markdown(f"<div class='mc {_regime_cls}'><h4>Market Regime</h4><h2 style='font-size:1.2rem;'>{_regime_lbl}</h2><div class='sub'>{_regime_sub}</div></div>", unsafe_allow_html=True)
-    _type_lbl = f'{_credit_count}C / {_debit_count}D'
-    with c7: st.markdown(f"<div class='mc'><h4>Strategy Mix</h4><h2 style='font-size:1.2rem;'>{_type_lbl}</h2><div class='sub'>Credit / Debit selected</div></div>", unsafe_allow_html=True)
+    with c7: st.markdown(f"<div class='mc'><h4>Strategy Mix</h4><h2 style='font-size:1.2rem;'>{_credit_count}C / {_debit_count}D</h2><div class='sub'>Credit / Debit selected</div></div>", unsafe_allow_html=True)
+    with c8: st.markdown(f"<div class='mc {'ok' if _total_theta > 0 else 'bad'}'><h4>Top-5 Θ/Day</h4><h2 style='font-size:1.2rem;'>{fmt(_total_theta)}</h2><div class='sub'>Combined daily theta</div></div>", unsafe_allow_html=True)
+    with c9: st.markdown(f"<div class='mc'><h4>Top-5 Capital</h4><h2 style='font-size:1.2rem;'>{fmt(_total_cap)}</h2><div class='sub'>Avg ROM {_avg_rom:.1f}%</div></div>", unsafe_allow_html=True)
 
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
@@ -1767,18 +1856,19 @@ def main():
                         <div style="text-align:right;"><div style="font-size:1.8rem;font-weight:800;color:{cc};font-family:'JetBrains Mono',monospace;">{cv:.0f}</div>
                         <div style="font-size:0.6rem;color:#888;text-transform:uppercase;">Conviction</div></div></div>
                         <div class='gr'>
-                        <div class='gi'><label>Spot</label><div class='v'>{fmt(t['price'])}</div></div>
+                        <div class='gi'><label>₹ Profit (lot)</label><div class='v tg'>{fmt(t.get('mp_lot',0))}</div></div>
+                        <div class='gi'><label>₹ Risk (lot)</label><div class='v tr'>{fmt(t.get('ml_lot',0))}</div></div>
+                        <div class='gi'><label>ROM %</label><div class='v {"tg" if t.get("rom_pct",0)>15 else "ta"}'>{t.get('rom_pct',0):.1f}%</div></div>
+                        <div class='gi'><label>POP</label><div class='v tg'>{t['pop']*100:.1f}%</div></div>
+                        <div class='gi'><label>Θ/Day ₹</label><div class='v {"tg" if t.get("theta_day",0)>0 else "tr"}'>{fmt(t.get('theta_day',0))}</div></div>
                         <div class='gi'><label>IV %ile</label><div class='v'>{t['IVPercentile']:.0f}%</div></div>
-                        <div class='gi'><label>POP (Ensemble)</label><div class='v tg'>{t['pop']*100:.1f}%</div></div>
-                        <div class='gi'><label>Expected Val</label><div class='v {"tg" if t["ev"]>0 else "tr"}'>{fmt(t['ev'])}</div></div>
-                        <div class='gi'><label>Max Profit</label><div class='v tg'>{fmt(t['max_profit'])}</div></div>
-                        <div class='gi'><label>Sharpe</label><div class='v'>{t['sharpe']:.2f}</div></div>
-                        <div class='gi'><label>Risk Score</label><div class='v {"tr" if t.get("risk_score",0)>50 else "ta"}'>{t.get('risk_score',0):.0f}</div></div>
-                        <div class='gi'><label>Stability</label><div class='v'>{t.get('stability',0):.2f}</div></div></div>
+                        <div class='gi'><label>Spot × Lot</label><div class='v'>{fmt(t['price'])} × {t.get("lot_size",1)}</div></div>
+                        <div class='gi'><label>Sharpe</label><div class='v'>{t['sharpe']:.2f}</div></div></div>
                         <div class='cb'><div class='cf' style='width:{cv}%;background:linear-gradient(90deg,{cc},{cc}aa);'></div></div>
                         <div style="display:flex;gap:0.5rem;margin-top:0.75rem;">
                         <span class='sb {"buy" if "UP" in t.get("trend_regime","") else ("sell" if "DOWN" in t.get("trend_regime","") else "neut")}'>{t.get('trend_regime','NEUTRAL')}</span>
-                        <span class='sb prem'>{t.get('vol_regime','NORMAL')}</span></div></div>""", unsafe_allow_html=True)
+                        <span class='sb prem'>{t.get('vol_regime','NORMAL')}</span>
+                        {"<span style='font-size:0.62rem;color:#666;margin-left:auto;'>Alt: " + str(t.get("alt_strategy","")) + " (" + str(int(t.get("alt_conviction",0))) + ")</span>" if t.get('alt_strategy') else ""}</div></div>""", unsafe_allow_html=True)
                     if st.button(f"Analyze {t['Instrument']}", key=f"a_{t['Instrument']}"):
                         st.session_state.sel = t['Instrument']
 
@@ -1820,7 +1910,7 @@ def main():
                 st.plotly_chart(em_chart(S, iv, T), width='stretch', key=f'em_{sel}')
 
             st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-            st.markdown("<span style='font-weight:700;color:#EAEAEA;'>Strategy Rankings</span><span style='color:#888;margin-left:0.75rem;font-size:0.85rem;'>All 10 strategies · Real MC · Full Greeks</span>", unsafe_allow_html=True)
+            st.markdown("<span style='font-weight:700;color:#EAEAEA;'>Strategy Rankings</span><span style='color:#888;margin-left:0.75rem;font-size:0.85rem;'>All 14 strategies · Real MC · Full Greeks · DTE-gated</span>", unsafe_allow_html=True)
 
             strats = []
             for sn in ALL_STRATS:
@@ -1832,7 +1922,9 @@ def main():
 
             for rank, s in enumerate(strats[:5], 1):
                 cv = s.conviction_score
-                with st.expander(f"{'🥇' if rank==1 else '🥈' if rank==2 else '🥉' if rank==3 else f'#{rank}'} {s.name} — Conv: {cv:.0f} | POP: {s.pop_ensemble*100:.1f}% | Sharpe: {s.sharpe_ratio:.2f} | Risk: {s.risk_score:.0f}", expanded=(rank==1)):
+                _stype = STRATEGY_TYPE.get(s.name, 'HYBRID')
+                _sbias = get_bias_label(s.name)
+                with st.expander(f"{'🥇' if rank==1 else '🥈' if rank==2 else '🥉' if rank==3 else f'#{rank}'} {s.name} [{_stype}] — Conv: {cv:.0f} | POP: {s.pop_ensemble*100:.1f}% | Sharpe: {s.sharpe_ratio:.2f} | {_sbias}", expanded=(rank==1)):
                     ec1, ec2 = st.columns([2, 1])
                     with ec1:
                         lh = "<table class='gt'><tr><th>Leg</th><th>Strike</th><th>Qty</th><th>Premium</th></tr>"
@@ -1866,20 +1958,27 @@ def main():
                             <strong>Charm:</strong> <span class='mono'>{gk.charm:+.6f}</span> &nbsp;
                             <strong>Speed:</strong> <span class='mono'>{gk.speed:+.6f}</span></p></div>""", unsafe_allow_html=True)
                         lot = row.get('lot_size', 1)
-                        st.markdown(f"""<div class='ib' style='margin-top:0.5rem;'><h4>Sizing Info</h4><p>
-                            <strong>Lot Size:</strong> <span class='mono'>{lot}</span><br>
+                        _mp_l = s.max_profit * lot; _ml_l = s.max_loss * lot
+                        _td = gk.theta * lot; _rom = (_mp_l / max(_ml_l, 1)) * 100
+                        st.markdown(f"""<div class='ib' style='margin-top:0.5rem;'><h4>Lot-Adjusted (×{lot})</h4><p>
+                            <strong>₹ Profit:</strong> <span class='mono tg'>{fmt(_mp_l)}</span><br>
+                            <strong>₹ Risk:</strong> <span class='mono tr'>{fmt(_ml_l)}</span><br>
+                            <strong>ROM:</strong> <span class='mono {"tg" if _rom>15 else "ta"}'>{_rom:.1f}%</span><br>
+                            <strong>Θ/Day ₹:</strong> <span class='mono {"tg" if _td>0 else "tr"}'>{fmt(_td)}</span><br>
                             <strong>Kelly %:</strong> <span class='mono tgl'>{s.kelly_fraction*100:.1f}%</span><br>
-                            <strong>Strike Gap:</strong> <span class='mono'>₹{auto_gap(S):.0f}</span></p></div>""", unsafe_allow_html=True)
+                            <strong>Gap:</strong> <span class='mono'>₹{auto_gap(S):.0f}</span></p></div>""", unsafe_allow_html=True)
 
     with tab3:
         if filtered:
             rdf = pd.DataFrame([{k: v for k, v in t.items() if k != '_result'} for t in filtered])
-            cols_show = ['Instrument','strategy','conviction_score','pop','ev','sharpe','kelly_frac','risk_score','stability',
-                        'net_credit','max_profit','max_loss','IVPercentile','GARCH_Vol','price','lot_size','vol_regime','trend_regime','CUSUM_Alert']
+            cols_show = ['Instrument','strategy','conviction_score','pop','mp_lot','ml_lot','rom_pct','theta_day',
+                        'ev','sharpe','kelly_frac','net_credit','max_profit','max_loss',
+                        'IVPercentile','price','lot_size','risk_score','stability',
+                        'alt_strategy','alt_conviction','vol_regime','trend_regime','CUSUM_Alert']
             avail = [c for c in cols_show if c in rdf.columns]
             display = rdf[avail].sort_values('conviction_score', ascending=False).copy()
             # Round numeric columns for readability
-            for col in ['conviction_score','ev','sharpe','kelly_frac','risk_score','stability','net_credit','max_profit','max_loss']:
+            for col in ['conviction_score','ev','sharpe','kelly_frac','risk_score','stability','net_credit','max_profit','max_loss','mp_lot','ml_lot','rom_pct','theta_day','alt_conviction']:
                 if col in display.columns:
                     display[col] = pd.to_numeric(display[col], errors='coerce').fillna(0).round(2)
             if 'pop' in display.columns:
