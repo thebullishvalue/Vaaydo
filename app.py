@@ -125,6 +125,14 @@ st.markdown("""
     .tc:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,0.4); border-color: rgba(var(--gold-rgb),0.3); }
     .tc::before { content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%; }
     .tc.hi::before { background: var(--green); } .tc.md::before { background: var(--amber); } .tc.lo::before { background: var(--red); }
+    .tc.bias-bull::before { background: #10b981; } .tc.bias-bear::before { background: #ef4444; }
+    .tc.bias-neut::before { background: #FFC300; } .tc.bias-vol::before { background: #A78BFA; }
+    .bias-tag { display:inline-block; font-size:0.6rem; font-weight:700; letter-spacing:0.5px; padding:0.15rem 0.5rem;
+        border-radius:3px; text-transform:uppercase; }
+    .bias-tag.bull { background:rgba(16,185,129,0.15); color:#10b981; }
+    .bias-tag.bear { background:rgba(239,68,68,0.15); color:#ef4444; }
+    .bias-tag.neut { background:rgba(255,195,0,0.15); color:#FFC300; }
+    .bias-tag.vol { background:rgba(167,139,250,0.15); color:#A78BFA; }
     .tc .sym { font-size: 1.2rem; font-weight: 800; color: var(--text); }
     .tc .strat { font-size: 0.75rem; font-weight: 700; color: var(--gold); text-transform: uppercase; letter-spacing: 1px; margin-top: 0.25rem; }
     .tc .gr { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-top: 1rem; }
@@ -710,13 +718,73 @@ def conviction_unified(ra, pop, ev_ratio, sharpe, stability, iv_norm):
     return max(0, min(100, result)) if not np.isnan(result) else 30.0
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STRATEGY BIAS CLASSIFICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StrategyBias:
+    BULLISH = 'BULLISH'
+    BEARISH = 'BEARISH'
+    NEUTRAL = 'NEUTRAL'
+    VOLATILE = 'VOLATILE'
+
+STRATEGY_BIAS = {
+    # Bullish — profit when market rises
+    'Bull Put Spread': StrategyBias.BULLISH,
+    'Bull Call Spread': StrategyBias.BULLISH,
+    # Bearish — profit when market falls
+    'Bear Call Spread': StrategyBias.BEARISH,
+    'Bear Put Spread': StrategyBias.BEARISH,
+    # Neutral / Range-bound — profit when market stays still
+    'Short Iron Condor': StrategyBias.NEUTRAL,
+    'Long Iron Condor': StrategyBias.NEUTRAL,  # still range-bound (debit)
+    'Short Iron Butterfly': StrategyBias.NEUTRAL,
+    'Long Iron Butterfly': StrategyBias.NEUTRAL,
+    'Short Strangle': StrategyBias.NEUTRAL,
+    'Short Straddle': StrategyBias.NEUTRAL,
+    'Calendar Spread': StrategyBias.NEUTRAL,
+    'Jade Lizard': StrategyBias.NEUTRAL,
+    # Volatile / Breakout — profit when market moves big
+    'Long Straddle': StrategyBias.VOLATILE,
+    'Long Strangle': StrategyBias.VOLATILE,
+    # Directional complex
+    'Broken Wing Butterfly': StrategyBias.BULLISH,
+    'Ratio Spread': StrategyBias.BULLISH,
+}
+
+BIAS_COLOR = {
+    StrategyBias.BULLISH: '#10b981',   # green
+    StrategyBias.BEARISH: '#ef4444',   # red
+    StrategyBias.NEUTRAL: '#FFC300',   # gold
+    StrategyBias.VOLATILE: '#A78BFA',  # purple
+}
+
+BIAS_LABEL = {
+    StrategyBias.BULLISH: '▲ BULLISH',
+    StrategyBias.BEARISH: '▼ BEARISH',
+    StrategyBias.NEUTRAL: '◆ NEUTRAL',
+    StrategyBias.VOLATILE: '⚡ VOLATILE',
+}
+
+def get_bias(strategy_name):
+    return STRATEGY_BIAS.get(strategy_name, StrategyBias.NEUTRAL)
+
+def get_bias_color(strategy_name):
+    return BIAS_COLOR.get(get_bias(strategy_name), '#FFC300')
+
+def get_bias_label(strategy_name):
+    return BIAS_LABEL.get(get_bias(strategy_name), '◆ NEUTRAL')
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # L6: STRATEGY ENGINE — All 10 with real MC, full Greeks, proper payoffs
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ALL_STRATS = ['Short Strangle','Short Straddle','Iron Condor','Iron Butterfly',
-              'Bull Put Spread','Bear Call Spread','Calendar Spread',
-              'Jade Lizard','Broken Wing Butterfly','Ratio Spread']
+              'Bull Put Spread','Bear Call Spread','Bull Call Spread','Bear Put Spread',
+              'Long Straddle','Long Strangle',
+              'Calendar Spread','Jade Lizard','Broken Wing Butterfly','Ratio Spread']
 
 MIN_PREMIUM = 0.50  # FIX #13: skip strategies with net credit below this
 
@@ -949,6 +1017,136 @@ def score_strategy(name, stock, settings):
                 sharpe_ratio=sh, kelly_fraction=kelly(pop_e, nc, ml, stab, mc_ev=ev, mc_std=std), net_greeks=ng,
                 conviction_score=cv, optimal_dte=30, risk_score=rs, stability_score=stab,
                 width=lc_k-sc_k, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
+
+        elif name == 'Bull Call Spread':
+            # Debit spread: buy lower call, sell higher call — bullish
+            n_long = max(1, round(em * 0.3 / g)) if g > 0 else 1
+            lc_k = snap(S - n_long * g, g)  # ITM or ATM long call
+            if lc_k >= S: lc_k = snap(S, g)
+            sc_k = lc_k + max(2 * g, min_wing)  # OTM short call
+            lc_p = BSM.call(S,lc_k,T,r,iv); sc_p = BSM.call(S,sc_k,T,r,iv)
+            nd = lc_p - sc_p  # net debit
+            if nd <= 0: return None
+            mp = (sc_k - lc_k) - nd  # max profit = width - debit
+            ml = nd  # max loss = debit paid
+            if mp < MIN_PREMIUM: return None
+            legs = [{'type':'Buy Call','strike':lc_k,'premium':lc_p,'qty':1},
+                    {'type':'Sell Call','strike':sc_k,'premium':sc_p,'qty':1}]
+            pop_b = BSM.prob_otm(S, lc_k, T, iv, 'put')  # prob stock > long strike
+            pop_m, ev, std = MC.analyze(S, iv, T, [
+                {'type':'Buy Call','strike':lc_k,'premium':lc_p,'qty':1},
+                {'type':'Sell Call','strike':sc_k,'premium':sc_p,'qty':1}], sim_vol=sim_vol)
+            pop_e = ensemble_pop(pop_b, pop_m)
+            ng = compute_full_greeks(S, T, r, iv, [
+                {'strike':lc_k,'otype':'call','qty':1}, {'strike':sc_k,'otype':'call','qty':-1}])
+            rs = BSM.risk_score(ng, iv, rvw)
+            ra = 0.85 if 'UP' in tr.value else (0.5 if tr==TrendRegime.NEUTRAL else 0.2)
+            sh = clamp_sharpe(ev, std)
+            cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
+            return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
+                breakeven_lower=lc_k+nd, breakeven_upper=sc_k,
+                pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,mp,ml,stab,mc_ev=ev,mc_std=std), net_greeks=ng,
+                conviction_score=cv, optimal_dte=30, risk_score=rs, stability_score=stab,
+                width=sc_k-lc_k, net_credit=-nd, risk_reward=clamp_rr(mp,ml), regime_alignment=ra)
+
+        elif name == 'Bear Put Spread':
+            # Debit spread: buy higher put, sell lower put — bearish
+            n_long = max(1, round(em * 0.3 / g)) if g > 0 else 1
+            lp_k = snap(S + n_long * g, g)  # ITM or ATM long put
+            if lp_k <= S: lp_k = snap(S, g)
+            sp_k = lp_k - max(2 * g, min_wing)  # OTM short put
+            lp_p = BSM.put(S,lp_k,T,r,iv); sp_p = BSM.put(S,sp_k,T,r,iv)
+            nd = lp_p - sp_p  # net debit
+            if nd <= 0: return None
+            mp = (lp_k - sp_k) - nd
+            ml = nd
+            if mp < MIN_PREMIUM: return None
+            legs = [{'type':'Buy Put','strike':lp_k,'premium':lp_p,'qty':1},
+                    {'type':'Sell Put','strike':sp_k,'premium':sp_p,'qty':1}]
+            pop_b = BSM.prob_otm(S, lp_k, T, iv, 'call')  # prob stock < long strike
+            pop_m, ev, std = MC.analyze(S, iv, T, [
+                {'type':'Buy Put','strike':lp_k,'premium':lp_p,'qty':1},
+                {'type':'Sell Put','strike':sp_k,'premium':sp_p,'qty':1}], sim_vol=sim_vol)
+            pop_e = ensemble_pop(pop_b, pop_m)
+            ng = compute_full_greeks(S, T, r, iv, [
+                {'strike':lp_k,'otype':'put','qty':1}, {'strike':sp_k,'otype':'put','qty':-1}])
+            rs = BSM.risk_score(ng, iv, rvw)
+            ra = 0.85 if 'DOWN' in tr.value else (0.5 if tr==TrendRegime.NEUTRAL else 0.2)
+            sh = clamp_sharpe(ev, std)
+            cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
+            return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
+                breakeven_lower=sp_k, breakeven_upper=lp_k-nd,
+                pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,mp,ml,stab,mc_ev=ev,mc_std=std), net_greeks=ng,
+                conviction_score=cv, optimal_dte=30, risk_score=rs, stability_score=stab,
+                width=lp_k-sp_k, net_credit=-nd, risk_reward=clamp_rr(mp,ml), regime_alignment=ra)
+
+        elif name == 'Long Straddle':
+            # Debit: buy ATM call + put — profit on big move either direction
+            K = snap(S, g)
+            cp = BSM.call(S,K,T,r,iv); pp = BSM.put(S,K,T,r,iv)
+            nd = cp + pp  # total debit
+            if nd <= 0: return None
+            ml = nd  # max loss = debit paid
+            mp = S * 0.5  # theoretical unlimited (cap for display)
+            legs = [{'type':'Buy Call','strike':K,'premium':cp,'qty':1},
+                    {'type':'Buy Put','strike':K,'premium':pp,'qty':1}]
+            # MC: simulate terminal PnL
+            terminal = MC.terminal_prices(S, iv, T)
+            pnl = np.maximum(terminal - K, 0) + np.maximum(K - terminal, 0) - nd
+            pop_m = float(np.mean(pnl > 0))
+            ev = float(np.mean(pnl))
+            std = float(np.std(pnl))
+            pop_b = 1.0 - (BSM.prob_otm(S,K+nd,T,iv,'call') * BSM.prob_otm(S,K-nd,T,iv,'put'))
+            pop_e = ensemble_pop(pop_b, pop_m)
+            ng = compute_full_greeks(S, T, r, iv, [
+                {'strike':K,'otype':'call','qty':1}, {'strike':K,'otype':'put','qty':1}])
+            rs = BSM.risk_score(ng, iv, rvw)
+            # High conviction when IV is LOW (cheap options) and trend is strong or vol expanding
+            ra = 0.85 if vr in (VolRegime.LOW,VolRegime.COMPRESSED) else (0.4 if vr==VolRegime.NORMAL else 0.2)
+            sh = clamp_sharpe(ev, std)
+            cv = conviction_unified(ra, pop_e, ev/max(nd,0.01), sh, stab, iv_norm)
+            return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
+                breakeven_lower=K-nd, breakeven_upper=K+nd,
+                pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,max(mp,1),ml,stab,mc_ev=ev,mc_std=std), net_greeks=ng,
+                conviction_score=cv, optimal_dte=30, risk_score=rs, stability_score=stab,
+                net_credit=-nd, risk_reward=clamp_rr(mp,ml), regime_alignment=ra)
+
+        elif name == 'Long Strangle':
+            # Debit: buy OTM call + OTM put — cheaper than straddle, needs bigger move
+            n_otm = max(1, round(em / g)) if g > 0 else 1
+            cK = snap(S + n_otm * g, g)
+            pK = snap(S - n_otm * g, g)
+            if cK <= S: cK = snap(S + g, g)
+            if pK >= S: pK = snap(S - g, g)
+            cp = BSM.call(S,cK,T,r,iv); pp = BSM.put(S,pK,T,r,iv)
+            nd = cp + pp
+            if nd <= 0: return None
+            ml = nd
+            mp = S * 0.5  # theoretical unlimited
+            legs = [{'type':'Buy Call','strike':cK,'premium':cp,'qty':1},
+                    {'type':'Buy Put','strike':pK,'premium':pp,'qty':1}]
+            terminal = MC.terminal_prices(S, iv, T)
+            pnl = np.maximum(terminal - cK, 0) + np.maximum(pK - terminal, 0) - nd
+            pop_m = float(np.mean(pnl > 0))
+            ev = float(np.mean(pnl))
+            std = float(np.std(pnl))
+            pop_b = 1.0 - (BSM.prob_otm(S,cK+nd,T,iv,'call') * BSM.prob_otm(S,pK-nd,T,iv,'put'))
+            pop_e = ensemble_pop(pop_b, pop_m)
+            ng = compute_full_greeks(S, T, r, iv, [
+                {'strike':cK,'otype':'call','qty':1}, {'strike':pK,'otype':'put','qty':1}])
+            rs = BSM.risk_score(ng, iv, rvw)
+            ra = 0.8 if vr in (VolRegime.LOW,VolRegime.COMPRESSED) else (0.35 if vr==VolRegime.NORMAL else 0.15)
+            sh = clamp_sharpe(ev, std)
+            cv = conviction_unified(ra, pop_e, ev/max(nd,0.01), sh, stab, iv_norm)
+            return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
+                breakeven_lower=pK-nd, breakeven_upper=cK+nd,
+                pop_bsm=pop_b, pop_mc=pop_m, pop_ensemble=pop_e, expected_value=ev,
+                sharpe_ratio=sh, kelly_fraction=kelly(pop_e,max(mp,1),ml,stab,mc_ev=ev,mc_std=std), net_greeks=ng,
+                conviction_score=cv, optimal_dte=30, risk_score=rs, stability_score=stab,
+                net_credit=-nd, risk_reward=clamp_rr(mp,ml), regime_alignment=ra)
 
         elif name == 'Jade Lizard':
             nc_otm = max(2, round(em * 0.8 / g)) if g > 0 else 2
@@ -1230,20 +1428,44 @@ def landing_page():
 
     st.markdown('<div style="height:1.5rem;"></div>', unsafe_allow_html=True)
 
-    # Strategy universe
+    # Strategy universe — categorized by bias
     st.markdown("""<div class='ib' style='padding:1.5rem;'>
-        <h4 style='color:#FFC300; margin:0 0 1rem 0; text-align:center;'>Strategy Universe</h4>
-        <div style='display:grid; grid-template-columns:repeat(5,1fr); gap:0.5rem; text-align:center;'>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Short Strangle</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Short Straddle</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Iron Condor</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Iron Butterfly</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Bull Put Spread</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Bear Call Spread</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Calendar Spread</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Jade Lizard</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Broken Wing Butterfly</span></div>
-            <div style='background:#1a1a2e; padding:0.5rem; border-radius:6px;'><span style='color:#fff; font-size:0.75rem;'>Ratio Spread</span></div>
+        <h4 style='color:#FFC300; margin:0 0 1rem 0; text-align:center;'>14 Strategy Universe</h4>
+        <div style='display:grid; grid-template-columns:repeat(2,1fr); gap:1rem;'>
+            <div>
+                <div style='font-size:0.7rem;font-weight:700;color:#10b981;margin-bottom:0.4rem;letter-spacing:1px;'>▲ BULLISH</div>
+                <div style='display:flex;flex-wrap:wrap;gap:0.3rem;'>
+                    <span style='background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);color:#10b981;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Bull Put Spread</span>
+                    <span style='background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);color:#10b981;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Bull Call Spread</span>
+                    <span style='background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);color:#10b981;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>BWB</span>
+                    <span style='background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);color:#10b981;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Ratio Spread</span>
+                </div>
+            </div>
+            <div>
+                <div style='font-size:0.7rem;font-weight:700;color:#ef4444;margin-bottom:0.4rem;letter-spacing:1px;'>▼ BEARISH</div>
+                <div style='display:flex;flex-wrap:wrap;gap:0.3rem;'>
+                    <span style='background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Bear Call Spread</span>
+                    <span style='background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#ef4444;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Bear Put Spread</span>
+                </div>
+            </div>
+            <div>
+                <div style='font-size:0.7rem;font-weight:700;color:#FFC300;margin-bottom:0.4rem;letter-spacing:1px;'>◆ NEUTRAL</div>
+                <div style='display:flex;flex-wrap:wrap;gap:0.3rem;'>
+                    <span style='background:rgba(255,195,0,0.1);border:1px solid rgba(255,195,0,0.3);color:#FFC300;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Iron Condor</span>
+                    <span style='background:rgba(255,195,0,0.1);border:1px solid rgba(255,195,0,0.3);color:#FFC300;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Iron Butterfly</span>
+                    <span style='background:rgba(255,195,0,0.1);border:1px solid rgba(255,195,0,0.3);color:#FFC300;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Short Strangle</span>
+                    <span style='background:rgba(255,195,0,0.1);border:1px solid rgba(255,195,0,0.3);color:#FFC300;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Short Straddle</span>
+                    <span style='background:rgba(255,195,0,0.1);border:1px solid rgba(255,195,0,0.3);color:#FFC300;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Calendar</span>
+                    <span style='background:rgba(255,195,0,0.1);border:1px solid rgba(255,195,0,0.3);color:#FFC300;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Jade Lizard</span>
+                </div>
+            </div>
+            <div>
+                <div style='font-size:0.7rem;font-weight:700;color:#A78BFA;margin-bottom:0.4rem;letter-spacing:1px;'>⚡ VOLATILE</div>
+                <div style='display:flex;flex-wrap:wrap;gap:0.3rem;'>
+                    <span style='background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);color:#A78BFA;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Long Straddle</span>
+                    <span style='background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);color:#A78BFA;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.7rem;'>Long Strangle</span>
+                </div>
+            </div>
         </div></div>""", unsafe_allow_html=True)
 
     st.markdown('<div style="height:1.5rem;"></div>', unsafe_allow_html=True)
@@ -1304,8 +1526,8 @@ def main():
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         st.markdown('<div class="stitle">🎯 Filters</div>', unsafe_allow_html=True)
-        min_ivp = st.slider("Min IV Percentile", 0, 100, 85)
-        min_cv = st.slider("Min Conviction", 0, 100, 60)
+        min_ivp = st.slider("Min IV Percentile", 0, 100, 20)
+        min_cv = st.slider("Min Conviction", 0, 100, 30)
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         st.markdown(f"""<div class='ib'><p style='font-size:0.72rem; margin:0; color:#888; line-height:1.5;'>
@@ -1315,7 +1537,7 @@ def main():
             <strong>Regime:</strong> 6-Vol × 5-Trend + ADX + Kalman<br>
             <strong>POP:</strong> Ensemble (BSM + MC fusion)<br>
             <strong>Sharpe:</strong> Clamped [-5, 5]<br>
-            <strong>Strategies:</strong> 10 Active</p></div>""", unsafe_allow_html=True)
+            <strong>Strategies:</strong> 14 Active (4 bias categories)</p></div>""", unsafe_allow_html=True)
 
     # ── LANDING PAGE (before analysis runs) ──
     if not st.session_state.get('analysis_run', False):
@@ -1359,12 +1581,13 @@ def main():
                 tr = detect_trend(rd['price'], rd.get('ma20_daily', rd['price']),
                     rd.get('ma50_daily', rd['price']), rd.get('rsi_daily', 50),
                     rd.get('% change', 0), rd.get('adx', 20), rd.get('kalman_trend', 0))
-                # Dynamic strategy labeling
+                # Dynamic strategy labeling (credit/debit auto-detection)
                 _sname = best.name
                 if _sname == 'Iron Condor':
                     _sname = 'Short Iron Condor' if best.net_credit > 0 else 'Long Iron Condor'
                 elif _sname == 'Iron Butterfly':
                     _sname = 'Short Iron Butterfly' if best.net_credit > 0 else 'Long Iron Butterfly'
+                _bias = get_bias(_sname)
                 all_trades.append({**rd, 'strategy': _sname, 'conviction_score': best.conviction_score,
                     'pop': best.pop_ensemble, 'ev': best.expected_value, 'sharpe': best.sharpe_ratio,
                     'kelly_frac': best.kelly_fraction, 'net_credit': best.net_credit,
@@ -1407,11 +1630,15 @@ def main():
             for i, t in enumerate(top):
                 with cols[i % 3]:
                     cv = t['conviction_score']; cc = '#10b981' if cv >= 65 else ('#f59e0b' if cv >= 40 else '#ef4444')
-                    cv_cls = 'hi' if cv >= 65 else ('md' if cv >= 40 else 'lo')
+                    _b = get_bias(t['strategy'])
+                    _bcls = 'bias-bull' if _b==StrategyBias.BULLISH else ('bias-bear' if _b==StrategyBias.BEARISH else ('bias-vol' if _b==StrategyBias.VOLATILE else 'bias-neut'))
+                    _btag = 'bull' if _b==StrategyBias.BULLISH else ('bear' if _b==StrategyBias.BEARISH else ('vol' if _b==StrategyBias.VOLATILE else 'neut'))
                     cusum_warn = " ⚠️" if t.get('CUSUM_Alert') else ""
-                    st.markdown(f"""<div class='tc {cv_cls}'>
+                    st.markdown(f"""<div class='tc {_bcls}'>
                         <div style="display:flex;justify-content:space-between;align-items:start;">
-                        <div><div class='sym'>{t['Instrument']}{cusum_warn}</div><div class='strat'>{t['strategy']}</div></div>
+                        <div><div class='sym'>{t['Instrument']}{cusum_warn}</div>
+                        <div class='strat'>{t['strategy']}</div>
+                        <span class='bias-tag {_btag}'>{get_bias_label(t['strategy'])}</span></div>
                         <div style="text-align:right;"><div style="font-size:1.8rem;font-weight:800;color:{cc};font-family:'JetBrains Mono',monospace;">{cv:.0f}</div>
                         <div style="font-size:0.6rem;color:#888;text-transform:uppercase;">Conviction</div></div></div>
                         <div class='gr'>
