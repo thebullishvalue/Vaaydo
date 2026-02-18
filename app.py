@@ -768,6 +768,113 @@ BIAS_LABEL = {
     StrategyBias.VOLATILE: '⚡ VOLATILE',
 }
 
+# Strategy credit/debit classification
+STRATEGY_TYPE = {
+    # Credit: receive premium upfront, theta positive, profit from IV crush
+    'Short Strangle': 'CREDIT', 'Short Straddle': 'CREDIT',
+    'Iron Condor': 'CREDIT', 'Iron Butterfly': 'CREDIT',
+    'Bull Put Spread': 'CREDIT', 'Bear Call Spread': 'CREDIT',
+    'Jade Lizard': 'CREDIT',
+    # Debit: pay premium upfront, theta negative, profit from IV expansion or move
+    'Bull Call Spread': 'DEBIT', 'Bear Put Spread': 'DEBIT',
+    'Long Straddle': 'DEBIT', 'Long Strangle': 'DEBIT',
+    'Calendar Spread': 'DEBIT',
+    # Hybrid: can be credit or debit depending on construction
+    'Broken Wing Butterfly': 'HYBRID', 'Ratio Spread': 'HYBRID',
+}
+
+# IVP gating: skip strategies that make NO sense in current IV environment
+# Returns (should_evaluate, iv_multiplier)
+def ivp_gate(strategy_name, ivp):
+    stype = STRATEGY_TYPE.get(strategy_name, 'HYBRID')
+    if stype == 'CREDIT':
+        # Credit strategies: need IV > 25 to be worth selling
+        # Below 25: skip entirely. 25-40: evaluate but penalize. 40+: good.
+        if ivp < 20: return False, 0.0
+        if ivp < 35: return True, 0.5   # weak environment for selling
+        if ivp < 55: return True, 0.8   # decent
+        return True, 1.0                 # rich premium, ideal
+    elif stype == 'DEBIT':
+        # Debit strategies: need IV < 75 to avoid overpaying
+        # Above 80: skip (too expensive). 60-80: penalize. Below 60: good.
+        if ivp > 85: return False, 0.0
+        if ivp > 70: return True, 0.5   # expensive options
+        if ivp > 50: return True, 0.8   # moderate
+        return True, 1.0                 # cheap options, ideal
+    else:  # HYBRID
+        return True, 0.9                 # always evaluate
+
+def compute_regime_alignment(strategy_name, vr, tr, ivp):
+    """Intelligent regime alignment: cross-references IV regime, trend, and strategy type.
+    
+    Core logic:
+    - Credit strategies thrive in HIGH IV + NEUTRAL trend (sell expensive, let theta decay)
+    - Debit directional strategies thrive in LOW IV + TRENDING (buy cheap, ride the move)
+    - Debit volatile strategies thrive in LOW IV + ANY trend (buy cheap, wait for explosion)
+    - Trend-bias must match: bullish strategies need UP trend, bearish need DOWN
+    """
+    stype = STRATEGY_TYPE.get(strategy_name, 'HYBRID')
+    bias = STRATEGY_BIAS.get(strategy_name, StrategyBias.NEUTRAL)
+    
+    # Base score from IV environment
+    iv_score = 0.5
+    if stype == 'CREDIT':
+        # Higher IV = better for credit (more premium collected, more room for IV crush)
+        if ivp >= 70: iv_score = 0.95
+        elif ivp >= 55: iv_score = 0.80
+        elif ivp >= 40: iv_score = 0.60
+        elif ivp >= 25: iv_score = 0.35
+        else: iv_score = 0.15
+    elif stype == 'DEBIT':
+        # Lower IV = better for debit (cheaper options, room for IV expansion)
+        if ivp <= 25: iv_score = 0.90
+        elif ivp <= 40: iv_score = 0.80
+        elif ivp <= 55: iv_score = 0.65
+        elif ivp <= 70: iv_score = 0.40
+        else: iv_score = 0.20
+    else:  # HYBRID
+        iv_score = 0.60  # moderate regardless
+    
+    # Trend alignment score
+    trend_score = 0.5
+    if bias == StrategyBias.BULLISH:
+        if 'STRONG_UP' in tr.value: trend_score = 0.95
+        elif 'UP' in tr.value: trend_score = 0.80
+        elif tr == TrendRegime.NEUTRAL: trend_score = 0.50
+        elif 'DOWN' in tr.value: trend_score = 0.15
+    elif bias == StrategyBias.BEARISH:
+        if 'STRONG_DOWN' in tr.value: trend_score = 0.95
+        elif 'DOWN' in tr.value: trend_score = 0.80
+        elif tr == TrendRegime.NEUTRAL: trend_score = 0.50
+        elif 'UP' in tr.value: trend_score = 0.15
+    elif bias == StrategyBias.NEUTRAL:
+        # Neutral strategies love ranging markets
+        if tr == TrendRegime.NEUTRAL: trend_score = 0.90
+        elif 'STRONG' in tr.value: trend_score = 0.20
+        else: trend_score = 0.55
+    elif bias == StrategyBias.VOLATILE:
+        # Volatile strategies love strong trends or expected breakouts
+        if 'STRONG' in tr.value: trend_score = 0.85
+        elif tr == TrendRegime.NEUTRAL: trend_score = 0.50  # could break either way
+        else: trend_score = 0.60
+    
+    # Vol regime bonus/penalty
+    vol_bonus = 0.0
+    if stype == 'CREDIT':
+        # Credit loves high vol regime (mean reversion expected)
+        if vr in (VolRegime.HIGH, VolRegime.EXTREME): vol_bonus = 0.10
+        elif vr == VolRegime.ELEVATED: vol_bonus = 0.05
+        elif vr in (VolRegime.LOW, VolRegime.COMPRESSED): vol_bonus = -0.10
+    elif stype == 'DEBIT':
+        # Debit loves low vol regime (expansion expected)
+        if vr in (VolRegime.LOW, VolRegime.COMPRESSED): vol_bonus = 0.10
+        elif vr == VolRegime.NORMAL: vol_bonus = 0.05
+        elif vr in (VolRegime.HIGH, VolRegime.EXTREME): vol_bonus = -0.10
+    
+    # Composite: 50% IV weight, 40% trend weight, 10% vol bonus
+    ra = 0.50 * iv_score + 0.40 * trend_score + 0.10 * (0.5 + vol_bonus * 5)
+    return max(0.05, min(0.95, ra))
+
 def get_bias(strategy_name):
     return STRATEGY_BIAS.get(strategy_name, StrategyBias.NEUTRAL)
 
@@ -797,7 +904,7 @@ def compute_full_greeks(S, T, r, iv, legs_spec):
         net = net + g.scale(qty)
     return net
 
-def score_strategy(name, stock, settings):
+def score_strategy(name, stock, settings, iv_mult=1.0):
     S = stock['price']; iv = stock['ATMIV'] / 100; ivp = stock['IVPercentile']
     # NaN guard
     if any(np.isnan(v) for v in [S, iv, ivp] if isinstance(v, (int, float))):
@@ -806,6 +913,7 @@ def score_strategy(name, stock, settings):
     T = settings['dte'] / 365; r = BSM.R; g = auto_gap(S)
     rsi = stock.get('rsi_daily', 50); adx = stock.get('adx', 20)
     kalman_t = stock.get('kalman_trend', 0)
+    ivp = stock.get('IVPercentile', 50)
     garch_p = stock.get('GARCH_Persistence', 0.95)
     cusum = stock.get('CUSUM_Alert', False)
     lot = stock.get('lot_size', 1)
@@ -850,7 +958,7 @@ def score_strategy(name, stock, settings):
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':cK,'otype':'call','qty':-1}, {'strike':pK,'otype':'put','qty':-1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.9 if vr in (VolRegime.HIGH, VolRegime.EXTREME) and tr==TrendRegime.NEUTRAL else 0.4
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             ev_ratio = ev / max(nc, 0.01)
             cv = conviction_unified(ra, pop_e, ev_ratio, sh, stab, iv_norm)
@@ -876,7 +984,7 @@ def score_strategy(name, stock, settings):
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':K,'otype':'call','qty':-1}, {'strike':K,'otype':'put','qty':-1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.85 if vr in (VolRegime.HIGH,VolRegime.EXTREME) and tr==TrendRegime.NEUTRAL else 0.35
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -916,7 +1024,7 @@ def score_strategy(name, stock, settings):
                 {'strike':sc,'otype':'call','qty':-1}, {'strike':lc,'otype':'call','qty':1},
                 {'strike':sp,'otype':'put','qty':-1}, {'strike':lp,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.8 if vr in (VolRegime.ELEVATED,VolRegime.HIGH) else 0.5
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -945,7 +1053,7 @@ def score_strategy(name, stock, settings):
                 {'strike':K,'otype':'call','qty':-1}, {'strike':K,'otype':'put','qty':-1},
                 {'strike':K+ww,'otype':'call','qty':1}, {'strike':K-ww,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.7 if tr==TrendRegime.NEUTRAL else 0.3
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -977,7 +1085,7 @@ def score_strategy(name, stock, settings):
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':sp_k,'otype':'put','qty':-1}, {'strike':lp_k,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.8 if 'UP' in tr.value else 0.3
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -1008,7 +1116,7 @@ def score_strategy(name, stock, settings):
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':sc_k,'otype':'call','qty':-1}, {'strike':lc_k,'otype':'call','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.8 if 'DOWN' in tr.value else 0.3
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -1040,7 +1148,7 @@ def score_strategy(name, stock, settings):
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':lc_k,'otype':'call','qty':1}, {'strike':sc_k,'otype':'call','qty':-1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.85 if 'UP' in tr.value else (0.5 if tr==TrendRegime.NEUTRAL else 0.2)
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1072,7 +1180,7 @@ def score_strategy(name, stock, settings):
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':lp_k,'otype':'put','qty':1}, {'strike':sp_k,'otype':'put','qty':-1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.85 if 'DOWN' in tr.value else (0.5 if tr==TrendRegime.NEUTRAL else 0.2)
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1104,7 +1212,7 @@ def score_strategy(name, stock, settings):
                 {'strike':K,'otype':'call','qty':1}, {'strike':K,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
             # High conviction when IV is LOW (cheap options) and trend is strong or vol expanding
-            ra = 0.85 if vr in (VolRegime.LOW,VolRegime.COMPRESSED) else (0.4 if vr==VolRegime.NORMAL else 0.2)
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(nd,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1138,7 +1246,7 @@ def score_strategy(name, stock, settings):
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':cK,'otype':'call','qty':1}, {'strike':pK,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.8 if vr in (VolRegime.LOW,VolRegime.COMPRESSED) else (0.35 if vr==VolRegime.NORMAL else 0.15)
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(nd,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1168,7 +1276,7 @@ def score_strategy(name, stock, settings):
                 {'strike':cK,'otype':'call','qty':-1}, {'strike':sp_k,'otype':'put','qty':-1},
                 {'strike':lp_k,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.7 if 'UP' in tr.value or tr==TrendRegime.NEUTRAL else 0.3
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(nc,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -1211,7 +1319,7 @@ def score_strategy(name, stock, settings):
             ng.theta = abs(BSM.greeks(S,K,fT,r,iv,'call').theta) - abs(BSM.greeks(S,K,bT,r,iv*0.95,'call').theta)
             ng.vega = BSM.greeks(S,K,bT,r,iv*0.95,'call').vega - BSM.greeks(S,K,fT,r,iv,'call').vega
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.8 if vr in (VolRegime.LOW,VolRegime.COMPRESSED) else 0.3
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1252,7 +1360,7 @@ def score_strategy(name, stock, settings):
                 {'strike':lo,'otype':'call','qty':1}, {'strike':c,'otype':'call','qty':-2},
                 {'strike':hi,'otype':'call','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.5
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1286,7 +1394,7 @@ def score_strategy(name, stock, settings):
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':lK,'otype':'call','qty':1}, {'strike':sK,'otype':'call','qty':-2}])
             rs = BSM.risk_score(ng, iv, rvw)
-            ra = 0.6 if 'UP' in tr.value else 0.3
+            ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
             sh = clamp_sharpe(ev, std)
             cv = conviction_unified(ra, pop_e, ev/max(mp,0.01), sh, stab, iv_norm)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1570,9 +1678,13 @@ def main():
             if pd.isna(rd.get('price')) or pd.isna(rd.get('ATMIV')) or rd['price'] <= 0 or rd['ATMIV'] <= 0:
                 continue
             best = None
+            _ivp = rd.get('IVPercentile', 50)
             for sn in ALL_STRATS:
+                # IVP gate: skip strategies that don't suit current IV environment
+                _gate, _iv_mult = ivp_gate(sn, _ivp)
+                if not _gate: continue
                 try:
-                    res = score_strategy(sn, rd, settings)
+                    res = score_strategy(sn, rd, settings, iv_mult=_iv_mult)
                     if res and (best is None or res.conviction_score > best.conviction_score):
                         best = res
                 except: continue
@@ -1601,6 +1713,11 @@ def main():
     # ── METRICS BAR ──
     avg_iv = df['IVPercentile'].mean(); avg_pcr = df['PCR'].mean()
     hc = len([t for t in filtered if t['conviction_score'] >= 65])
+    # Market regime: credit vs debit favored
+    _credit_count = len([t for t in filtered if STRATEGY_TYPE.get(t['strategy'].replace('Short ','').replace('Long ',''), 
+        STRATEGY_TYPE.get(t['strategy'],'HYBRID')) == 'CREDIT'])
+    _debit_count = len([t for t in filtered if STRATEGY_TYPE.get(t['strategy'].replace('Short ','').replace('Long ',''),
+        STRATEGY_TYPE.get(t['strategy'],'HYBRID')) == 'DEBIT'])
     cusum_alerts = len(df[df['CUSUM_Alert'] == True])
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -1611,6 +1728,13 @@ def main():
     with c3: st.markdown(f"<div class='mc {'ok' if avg_iv > 55 else 'warn' if avg_iv > 35 else 'info'}'><h4>Avg IV Percentile</h4><h2>{avg_iv:.0f}%</h2><div class='sub'>GARCH avg: {df['GARCH_Vol'].mean():.1f}%</div></div>", unsafe_allow_html=True)
     with c4: st.markdown(f"<div class='mc {'ok' if avg_pcr > 1.2 else 'bad' if avg_pcr < 0.8 else 'info'}'><h4>Avg PCR</h4><h2>{avg_pcr:.2f}</h2><div class='sub'>{'Bullish' if avg_pcr > 1.2 else 'Bearish' if avg_pcr < 0.8 else 'Neutral'} bias</div></div>", unsafe_allow_html=True)
     with c5: st.markdown(f"<div class='mc {'bad' if cusum_alerts > 5 else 'warn' if cusum_alerts > 0 else 'ok'}'><h4>CUSUM Alerts</h4><h2>{cusum_alerts}</h2><div class='sub'>Structural breaks</div></div>", unsafe_allow_html=True)
+    c6, c7 = st.columns(2)
+    _regime_lbl = 'CREDIT-FAVORED' if avg_iv >= 55 else ('DEBIT-FAVORED' if avg_iv <= 35 else 'MIXED')
+    _regime_cls = 'gold' if avg_iv >= 55 else ('info' if avg_iv <= 35 else 'warn')
+    _regime_sub = f'Avg IVP {avg_iv:.0f}% · Sell premium' if avg_iv >= 55 else (f'Avg IVP {avg_iv:.0f}% · Buy premium' if avg_iv <= 35 else f'Avg IVP {avg_iv:.0f}% · Both viable')
+    with c6: st.markdown(f"<div class='mc {_regime_cls}'><h4>Market Regime</h4><h2 style='font-size:1.2rem;'>{_regime_lbl}</h2><div class='sub'>{_regime_sub}</div></div>", unsafe_allow_html=True)
+    _type_lbl = f'{_credit_count}C / {_debit_count}D'
+    with c7: st.markdown(f"<div class='mc'><h4>Strategy Mix</h4><h2 style='font-size:1.2rem;'>{_type_lbl}</h2><div class='sub'>Credit / Debit selected</div></div>", unsafe_allow_html=True)
 
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
@@ -1638,7 +1762,8 @@ def main():
                         <div style="display:flex;justify-content:space-between;align-items:start;">
                         <div><div class='sym'>{t['Instrument']}{cusum_warn}</div>
                         <div class='strat'>{t['strategy']}</div>
-                        <span class='bias-tag {_btag}'>{get_bias_label(t['strategy'])}</span></div>
+                        <span class='bias-tag {_btag}'>{get_bias_label(t['strategy'])}</span>
+                        <span class='bias-tag {"neut" if STRATEGY_TYPE.get(t["strategy"].replace("Short ","").replace("Long ",""), STRATEGY_TYPE.get(t["strategy"],"HYBRID"))=="CREDIT" else ("vol" if STRATEGY_TYPE.get(t["strategy"].replace("Short ","").replace("Long ",""), STRATEGY_TYPE.get(t["strategy"],"HYBRID"))=="DEBIT" else "warn")}'>{"₹ CREDIT" if STRATEGY_TYPE.get(t["strategy"].replace("Short ","").replace("Long ",""), STRATEGY_TYPE.get(t["strategy"],"HYBRID"))=="CREDIT" else ("₹ DEBIT" if STRATEGY_TYPE.get(t["strategy"].replace("Short ","").replace("Long ",""), STRATEGY_TYPE.get(t["strategy"],"HYBRID"))=="DEBIT" else "₹ HYBRID")}</span></div>
                         <div style="text-align:right;"><div style="font-size:1.8rem;font-weight:800;color:{cc};font-family:'JetBrains Mono',monospace;">{cv:.0f}</div>
                         <div style="font-size:0.6rem;color:#888;text-transform:uppercase;">Conviction</div></div></div>
                         <div class='gr'>
