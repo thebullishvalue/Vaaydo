@@ -1,43 +1,32 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║  VAAYDO (वायदो) — FnO Trade Intelligence v3.3                           ║
-║  World's First God-Tier Options Trading Intelligence System             ║
-║  Version 3.1.0 | Hemrek Capital                                        ║
+║  VAAYDO (वायदो) — FnO Trade Intelligence                              ║
+║  Quantitative Options Strategy Screener & Analytics Platform           ║
+║  Version 3.3.0 | Hemrek Capital                                       ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
-MATHEMATICAL ARSENAL (20 Engines):
- 1. Black-Scholes-Merton — Full pricing + 9 Greeks (Δ,Γ,Θ,ν,ρ,Vanna,Volga,Charm,Speed)
- 2. Multi-Estimator Vol — Close-to-Close, Parkinson, Garman-Klass, Yang-Zhang (§3.2)
- 3. GARCH(1,1) — Conditional variance, persistence, half-life (§3.2)
- 4. Volatility Risk Premium — Regime-adaptive IV from RV (§3.3)
- 5. Monte Carlo (Antithetic) — 10K effective paths, all 10 strategies (§5.1)
- 6. Kelly Criterion — Half-Kelly, confidence-weighted (§7.1)
- 7. 6-State Vol Regime — Compressed/Low/Normal/Elevated/High/Extreme (§4.2)
- 8. 5-State Trend Regime — MA + RSI + ADX + Momentum (§4.3)
- 9. Kalman Filter — Adaptive trend + volatility smoothing (§5.3)
-10. CUSUM — Multi-stream structural break detection (§5.4)
-11. Higher-Order Greeks — Vanna, Volga, Charm, Speed (§6.2)
-12. Composite Risk Score — Regime-weighted multi-Greek aggregation (§6.3)
-13. Ensemble POP — Inverse-variance BSM+MC fusion (§9.2)
-14. Regime Stability — GARCH persistence + CUSUM stability (§4.4)
-15. Entropy Uncertainty — Regime ambiguity quantification
-16. Expected Move Zones — 1σ/2σ/3σ log-normal distributions
-17. Sharpe-Ratio Ranking — Risk-adjusted, clamped [-5,5]
-18. Information Ratio — Strategy performance benchmarking
-19. Unified Conviction — §9.1 multi-factor weighted (premium-relative EV)
-20. SPAN Margin Estimation — Realistic max loss for unlimited-risk strategies
+ENGINES (20):
+  BSM Pricing (9 Greeks) · Multi-Estimator Vol (C2C/Park/GK/YZ) · GARCH(1,1)
+  VRP Regime-Adaptive · MC 10K Antithetic · Kelly (Continuous, Capital-Normalized)
+  6-State Vol Regime · 5-State Trend Regime · Kalman Filter · CUSUM Structural Break
+  Higher-Order Greeks (Vanna/Volga/Charm/Speed) · Composite Risk Score
+  Ensemble POP (BSM+MC Fusion) · Regime Stability · Expected Move Zones
+  Sharpe Ranking · SPAN Margin · Unified Conviction (9-Factor)
 
-STRATEGY UNIVERSE (10 Active):
- Short Strangle · Short Straddle · Iron Condor · Iron Butterfly
- Bull Put Spread · Bear Call Spread · Calendar Spread
- Jade Lizard · Broken Wing Butterfly · Ratio Spread
+STRATEGY UNIVERSE (14):
+  ▲ BULLISH:  Bull Put Spread · Bull Call Spread · BWB · Ratio Spread
+  ▼ BEARISH:  Bear Call Spread · Bear Put Spread
+  ◆ NEUTRAL:  Iron Condor · Iron Butterfly · Short Strangle · Short Straddle
+              Calendar Spread · Jade Lizard
+  ⚡ VOLATILE: Long Straddle · Long Strangle
 
-BUGFIXES v3.1:
- - Sharpe clamped to [-5,5] — no more 10-digit explosions
- - All 10 strategies use real MC simulation — no fake pop_b*0.95
- - Full Greeks (9) computed for all strategies — not just theta
- - EV normalized relative to max_profit — not absolute ₹
- - SPAN margin for unlimited-risk strategies — not arbitrary %
+INTELLIGENCE LAYERS:
+  IVP Gate — Credit/debit strategy selection by IV environment
+  DTE Gate — Strategy viability per time-to-expiry
+  Regime Alignment — Cross-references IV × Trend × Vol for each strategy
+  Premium Quality — Credit/risk ratio scoring
+  CUSUM Penalty — Structural break kills neutral strats, boosts volatile
+  Lot-Adjusted Financials — ₹ P&L, ROM%, Θ/day in real capital terms
  - Wing width enforced >= 1 gap — no collapsed strikes
  - BWB/Ratio/Calendar proper payoff math — no arbitrary multipliers
  - Min premium threshold — skip strategies with credit < ₹0.50
@@ -656,12 +645,15 @@ def regime_vol_weight(vr):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def kelly(p, w, l, confidence=1.0, mc_ev=None, mc_std=None):
-    """Kelly Criterion — MC-aware for option selling strategies.
-    If mc_ev/mc_std provided, uses continuous Kelly: f* = μ/σ² (scaled).
-    Otherwise falls back to binary Kelly."""
+    """Kelly: continuous f* = (EV/capital) / (σ/capital)² → normalized by max_loss."""
     if mc_ev is not None and mc_std is not None and mc_std > 0.01:
-        # Continuous Kelly: f* = EV / variance, half-Kelly scaled
-        k = mc_ev / (mc_std ** 2)
+        capital = max(abs(l), abs(w), 1)
+        ev_n = mc_ev / capital
+        std_n = mc_std / capital
+        if std_n > 0.001:
+            k = ev_n / (std_n ** 2)
+        else:
+            k = 0
         return max(0, min(k * 0.5 * max(0.5, min(confidence, 1.0)), 0.25))
     if l <= 0 or w <= 0: return 0.0
     b = w / abs(l)
@@ -683,10 +675,17 @@ def auto_gap(price):
 def snap(x, g):
     return round(x / g) * g
 
-def clamp_sharpe(ev, std):
-    """FIX #3: Clamp Sharpe to [-5, 5] to prevent explosion"""
+def clamp_sharpe(ev, std, max_loss=None):
+    """Sharpe ratio with optional capital normalization for cross-strategy comparison."""
     if std < 0.01 or np.isnan(ev) or np.isnan(std): return 0.0
-    result = ev / std
+    # If max_loss provided, normalize to get return-based Sharpe
+    if max_loss and max_loss > 0:
+        ev_n = ev / max_loss
+        std_n = std / max_loss
+        if std_n < 0.001: return 0.0
+        result = ev_n / std_n
+    else:
+        result = ev / std
     return max(-5.0, min(5.0, result)) if not np.isnan(result) else 0.0
 
 def clamp_rr(nc, ml):
@@ -694,11 +693,14 @@ def clamp_rr(nc, ml):
     if ml <= 0: return 0.0
     return max(0.0, min(50.0, nc / ml))
 
-def span_margin(S, iv, lot_size=1):
-    """FIX #4: SPAN-like margin estimate for unlimited risk strategies"""
-    # Approximate SPAN: max(premium + 15% of underlying, premium + 3σ move) per lot
-    sigma_move = S * iv * np.sqrt(30/365) * 2  # ~2σ monthly move
-    return max(S * 0.15, sigma_move) * lot_size
+def span_margin(S, iv, lot_size=1, dte=30):
+    """SPAN-like margin: scales with DTE and IV. Lower for near-expiry."""
+    # SPAN ≈ max(premium_margin, movement_margin)
+    # Movement scales with sqrt(DTE) not sqrt(30)
+    t_factor = max(dte, 1) / 365
+    sigma_move = S * iv * np.sqrt(t_factor) * 2.5  # 2.5σ move over DTE
+    base_margin = S * 0.12  # minimum 12% of spot (NSE floor)
+    return max(base_margin, sigma_move) * lot_size
 
 def ensemble_pop(pop_bsm, pop_mc):
     """§9.2: Inverse-variance weighted fusion"""
@@ -788,13 +790,13 @@ STRATEGY_TYPE = {
 # Returns (should_evaluate, iv_multiplier)
 # DTE fitness: each strategy has an optimal DTE range
 DTE_RANGE = {
-    'Short Strangle':  (3, 60),   'Short Straddle':  (3, 45),
-    'Iron Condor':     (7, 60),   'Iron Butterfly':  (7, 50),
-    'Bull Put Spread': (3, 60),   'Bear Call Spread': (3, 60),
-    'Bull Call Spread': (7, 60),  'Bear Put Spread': (7, 60),
-    'Long Straddle':   (14, 90),  'Long Strangle':   (14, 90),
-    'Calendar Spread': (21, 90),  'Jade Lizard':     (7, 60),
-    'Broken Wing Butterfly': (14, 60), 'Ratio Spread': (7, 60),
+    'Short Strangle':  (1, 60),   'Short Straddle':  (1, 45),
+    'Iron Condor':     (2, 60),   'Iron Butterfly':  (2, 50),
+    'Bull Put Spread': (1, 60),   'Bear Call Spread': (1, 60),
+    'Bull Call Spread': (2, 60),  'Bear Put Spread': (2, 60),
+    'Long Straddle':   (3, 90),   'Long Strangle':   (3, 90),
+    'Calendar Spread': (14, 90),  'Jade Lizard':     (2, 60),
+    'Broken Wing Butterfly': (5, 60), 'Ratio Spread': (3, 60),
 }
 
 def dte_gate(strategy_name, dte):
@@ -905,6 +907,21 @@ def get_bias_color(strategy_name):
 def get_bias_label(strategy_name):
     return BIAS_LABEL.get(get_bias(strategy_name), '◆ NEUTRAL')
 
+def get_strategy_type(strategy_name):
+    # Handle dynamic Short/Long prefix
+    for prefix in ['Short ', 'Long ']:
+        base = strategy_name.replace(prefix, '')
+        if base in STRATEGY_TYPE:
+            return STRATEGY_TYPE[base]
+    return STRATEGY_TYPE.get(strategy_name, 'HYBRID')
+
+def get_type_tag(strategy_name):
+    t = get_strategy_type(strategy_name)
+    if t == 'CREDIT': return 'neut', '₹ CREDIT'
+    elif t == 'DEBIT': return 'vol', '₹ DEBIT'
+    return 'warn', '₹ HYBRID'
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # L6: STRATEGY ENGINE — All 10 with real MC, full Greeks, proper payoffs
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -929,14 +946,20 @@ def compute_full_greeks(S, T, r, iv, legs_spec):
 def _compute_quality(net_credit, max_loss, max_profit, name, cusum):
     stype = STRATEGY_TYPE.get(name, 'HYBRID')
     bias = STRATEGY_BIAS.get(name, StrategyBias.NEUTRAL)
-    if stype == 'CREDIT':
-        _pq = min(1.0, (abs(net_credit) / max(abs(max_loss), 1)) / 0.30)
+    ratio = abs(net_credit) / max(abs(max_loss), 1) if stype == 'CREDIT' else abs(max_profit) / max(abs(max_loss), 1)
+    # Strategy-type aware thresholds (what's "good" credit/risk varies by structure)
+    if name in ('Short Strangle', 'Short Straddle'):
+        _pq = min(1.0, ratio / 0.06)     # naked: 6% credit/margin = excellent
+    elif name in ('Iron Condor', 'Iron Butterfly', 'Jade Lizard'):
+        _pq = min(1.0, ratio / 0.20)     # 4-leg: 20% credit/risk = excellent
+    elif stype == 'CREDIT':
+        _pq = min(1.0, ratio / 0.25)     # spreads: 25% = excellent
     elif stype == 'DEBIT':
-        _pq = min(1.0, (abs(max_profit) / max(abs(max_loss), 1)) / 2.0)
+        _pq = min(1.0, ratio / 1.5)      # debit: 150% profit/risk = excellent
     else:
-        _pq = min(1.0, max(abs(net_credit), abs(max_profit)) / max(abs(max_loss), 1) / 0.50)
+        _pq = min(1.0, ratio / 0.30)
     if cusum:
-        if bias == StrategyBias.NEUTRAL: _cp = 0.55
+        if bias == StrategyBias.NEUTRAL: _cp = 0.60
         elif bias == StrategyBias.VOLATILE: _cp = 1.05
         else: _cp = 0.85
     else:
@@ -975,8 +998,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
 
     try:
         if name == 'Short Strangle':
-            # Delta-aware: place shorts at ~20Δ OTM
-            n_otm = max(1, round(em / g)) if g > 0 else 1
+            # Place shorts at ~0.7 EM OTM (balance premium vs safety)
+            n_otm = max(1, round(em * 0.7 / g)) if g > 0 else 1
             # For short DTE with wide gaps, ensure at least 1 gap OTM
             n_otm = max(n_otm, 1)
             cK = snap(S + n_otm * g, g)
@@ -992,17 +1015,17 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             cp = BSM.call(S,cK,T,r,iv); pp = BSM.put(S,pK,T,r,iv)
             nc = cp + pp
             if nc < MIN_PREMIUM: return None
-            ml = span_margin(S, iv)  # FIX #4: SPAN margin
+            ml = span_margin(S, iv, dte=settings['dte'])  # SPAN scales with DTE
             legs = [{'type':'Sell Call','strike':cK,'premium':cp,'qty':1},
                     {'type':'Sell Put','strike':pK,'premium':pp,'qty':1}]
-            pop_b = BSM.prob_otm(S,cK,T,iv,'call') * BSM.prob_otm(S,pK,T,iv,'put')
+            pop_b = max(0, BSM.prob_otm(S,cK,T,iv,'call') + BSM.prob_otm(S,pK,T,iv,'put') - 1)
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
             pop_e = ensemble_pop(pop_b, pop_m)
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':cK,'otype':'call','qty':-1}, {'strike':pK,'otype':'put','qty':-1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             ev_ratio = ev / max(nc, 0.01)
             _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev_ratio, sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
@@ -1019,17 +1042,17 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             cp = BSM.call(S,K,T,r,iv); pp = BSM.put(S,K,T,r,iv)
             nc = cp + pp
             if nc < MIN_PREMIUM: return None
-            ml = span_margin(S, iv)
+            ml = span_margin(S, iv, dte=settings['dte'])
             legs = [{'type':'Sell Call','strike':K,'premium':cp,'qty':1},
                     {'type':'Sell Put','strike':K,'premium':pp,'qty':1}]
-            pop_b = BSM.prob_otm(S,K+nc,T,iv,'call') * BSM.prob_otm(S,K-nc,T,iv,'put')
+            pop_b = max(0, BSM.prob_otm(S,K+nc,T,iv,'call') + BSM.prob_otm(S,K-nc,T,iv,'put') - 1)
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
             pop_e = ensemble_pop(pop_b, pop_m)
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':K,'otype':'call','qty':-1}, {'strike':K,'otype':'put','qty':-1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -1040,8 +1063,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                 stability_score=stab, net_credit=nc, risk_reward=clamp_rr(nc,ml), regime_alignment=ra)
 
         elif name == 'Iron Condor':
-            # Short strikes: 1-2 gaps OTM, wings 2 further gaps
-            n_short = max(1, round(em / g)) if g > 0 else 1
+            # Short strikes: ~0.6 EM OTM (tighter than strangle, wider than BPS)
+            n_short = max(1, round(em * 0.6 / g)) if g > 0 else 1
             sc = snap(S + n_short * g, g)
             sp = snap(S - n_short * g, g)
             # Wings: 2 gaps beyond shorts
@@ -1062,7 +1085,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                     {'type':'Buy Call','strike':lc,'premium':BSM.call(S,lc,T,r,iv),'qty':1},
                     {'type':'Sell Put','strike':sp,'premium':BSM.put(S,sp,T,r,iv),'qty':1},
                     {'type':'Buy Put','strike':lp,'premium':BSM.put(S,lp,T,r,iv),'qty':1}]
-            pop_b = BSM.prob_otm(S,sc,T,iv,'call') * BSM.prob_otm(S,sp,T,iv,'put')
+            pop_b = max(0, BSM.prob_otm(S,sc,T,iv,'call') + BSM.prob_otm(S,sp,T,iv,'put') - 1)
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
             pop_e = ensemble_pop(pop_b, pop_m)
             ng = compute_full_greeks(S, T, r, iv, [
@@ -1070,7 +1093,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                 {'strike':sp,'otype':'put','qty':-1}, {'strike':lp,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -1082,8 +1105,8 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
 
         elif name == 'Iron Butterfly':
             K = snap(S, g)
-            # Wings: 2-3 gaps from ATM
-            n_wing = max(2, round(em / g)) if g > 0 else 2
+            # Wings: ~0.8 EM from ATM (wider = more credit captured)
+            n_wing = max(2, round(em * 0.8 / g)) if g > 0 else 2
             ww = max(n_wing * g, min_wing)
             nc = (BSM.call(S,K,T,r,iv)+BSM.put(S,K,T,r,iv)) - (BSM.call(S,K+ww,T,r,iv)+BSM.put(S,K-ww,T,r,iv))
             if nc < MIN_PREMIUM: return None
@@ -1093,14 +1116,14 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                     {'type':'Buy Call','strike':K+ww,'premium':BSM.call(S,K+ww,T,r,iv),'qty':1},
                     {'type':'Buy Put','strike':K-ww,'premium':BSM.put(S,K-ww,T,r,iv),'qty':1}]
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
-            pop_b = BSM.prob_otm(S,K+nc,T,iv,'call') * BSM.prob_otm(S,K-nc,T,iv,'put')
+            pop_b = max(0, BSM.prob_otm(S,K+nc,T,iv,'call') + BSM.prob_otm(S,K-nc,T,iv,'put') - 1)
             pop_e = ensemble_pop(pop_b, pop_m)
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':K,'otype':'call','qty':-1}, {'strike':K,'otype':'put','qty':-1},
                 {'strike':K+ww,'otype':'call','qty':1}, {'strike':K-ww,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -1133,7 +1156,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                 {'strike':sp_k,'otype':'put','qty':-1}, {'strike':lp_k,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -1165,7 +1188,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                 {'strike':sc_k,'otype':'call','qty':-1}, {'strike':lc_k,'otype':'call','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -1199,7 +1222,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                 {'strike':lc_k,'otype':'call','qty':1}, {'strike':sc_k,'otype':'call','qty':-1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1233,7 +1256,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                 {'strike':lp_k,'otype':'put','qty':1}, {'strike':sp_k,'otype':'put','qty':-1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1260,14 +1283,14 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             pop_m = float(np.mean(pnl > 0))
             ev = float(np.mean(pnl))
             std = float(np.std(pnl))
-            pop_b = 1.0 - (BSM.prob_otm(S,K+nd,T,iv,'call') * BSM.prob_otm(S,K-nd,T,iv,'put'))
+            pop_b = min(1.0, (1 - BSM.prob_otm(S,K+nd,T,iv,'call')) + (1 - BSM.prob_otm(S,K-nd,T,iv,'put')))
             pop_e = ensemble_pop(pop_b, pop_m)
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':K,'otype':'call','qty':1}, {'strike':K,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
             # High conviction when IV is LOW (cheap options) and trend is strong or vol expanding
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, nd, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(nd, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1297,13 +1320,13 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             pop_m = float(np.mean(pnl > 0))
             ev = float(np.mean(pnl))
             std = float(np.std(pnl))
-            pop_b = 1.0 - (BSM.prob_otm(S,cK+nd,T,iv,'call') * BSM.prob_otm(S,pK-nd,T,iv,'put'))
+            pop_b = min(1.0, (1 - BSM.prob_otm(S,cK+nd,T,iv,'call')) + (1 - BSM.prob_otm(S,pK-nd,T,iv,'put')))
             pop_e = ensemble_pop(pop_b, pop_m)
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':cK,'otype':'call','qty':1}, {'strike':pK,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, nd, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(nd, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1327,14 +1350,14 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                     {'type':'Sell Put','strike':sp_k,'premium':sp_v,'qty':1},
                     {'type':'Buy Put','strike':lp_k,'premium':lp_v,'qty':1}]
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
-            pop_b = BSM.prob_otm(S,cK,T,iv,'call') * BSM.prob_otm(S,sp_k,T,iv,'put')
+            pop_b = max(0, BSM.prob_otm(S,cK,T,iv,'call') + BSM.prob_otm(S,sp_k,T,iv,'put') - 1)
             pop_e = ensemble_pop(pop_b, pop_m)
             ng = compute_full_greeks(S, T, r, iv, [
                 {'strike':cK,'otype':'call','qty':-1}, {'strike':sp_k,'otype':'put','qty':-1},
                 {'strike':lp_k,'otype':'put','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, nc, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(nc, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=nc, max_loss=ml,
@@ -1379,7 +1402,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
             ng.vega = BSM.greeks(S,K,bT,r,iv*0.95,'call').vega - BSM.greeks(S,K,fT,r,iv,'call').vega
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1421,7 +1444,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                 {'strike':hi,'otype':'call','qty':1}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1456,7 +1479,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0):
                 {'strike':lK,'otype':'call','qty':1}, {'strike':sK,'otype':'call','qty':-2}])
             rs = BSM.risk_score(ng, iv, rvw)
             ra = compute_regime_alignment(name, vr, tr, ivp) * iv_mult
-            sh = clamp_sharpe(ev, std)
+            sh = clamp_sharpe(ev, std, ml)
             _pq, _cp = _compute_quality(nc, ml, mp, name, _cusum)
             cv = conviction_unified(ra, pop_e, ev/max(mp, 0.01), sh, stab, iv_norm, prem_quality=_pq, dte_fitness=_dte_fit, cusum_penalty=_cp)
             return StrategyResult(name=name, legs=legs, max_profit=mp, max_loss=ml,
@@ -1497,7 +1520,7 @@ def fmt(v):
             f = s
         if dp > 0.005: f += f"{dp:.2f}"[1:]
         return f"{'-' if neg else ''}₹{f}"
-    except: return str(v)
+    except Exception: return str(v)
 
 def payoff_chart(strat, S):
     margin = max(strat.width, S * 0.12) if strat.width > 0 else S * 0.12
@@ -1677,7 +1700,10 @@ def main():
         st.markdown('<div class="stitle">⚡ Expiry & Parameters</div>', unsafe_allow_html=True)
 
         today = date.today()
-        expiry_date = st.date_input("Expiry Date", value=today + timedelta(days=(3-today.weekday())%7 + (7 if (3-today.weekday())%7 == 0 else 0)),
+        # Default: next Thursday (NSE weekly expiry) with minimum 3 DTE
+        _days_to_thu = (3 - today.weekday()) % 7
+        if _days_to_thu < 3: _days_to_thu += 7  # ensure at least 3 DTE
+        expiry_date = st.date_input("Expiry Date", value=today + timedelta(days=_days_to_thu),
                                     min_value=today + timedelta(days=1), max_value=today + timedelta(days=365))
         dte = (expiry_date - today).days
         st.caption(f"**{dte} days** to expiry ({expiry_date.strftime('%d %b %Y')})")
@@ -1754,7 +1780,8 @@ def main():
                             best = res
                         elif alt is None or res.conviction_score > alt.conviction_score:
                             alt = res
-                except: continue
+                except Exception:
+                    continue
             if best:
                 vr = detect_vol_regime(rd.get('IVPercentile', 50))
                 tr = detect_trend(rd['price'], rd.get('ma20_daily', rd['price']),
@@ -1768,8 +1795,8 @@ def main():
                     _sname = 'Short Iron Butterfly' if best.net_credit > 0 else 'Long Iron Butterfly'
                 _bias = get_bias(_sname)
                 _lot = rd.get('lot_size', 1)
-                _mp_lot = best.max_profit * _lot
-                _ml_lot = best.max_loss * _lot
+                _mp_lot = round(best.max_profit * _lot, 2)
+                _ml_lot = round(best.max_loss * _lot, 2)
                 _ev_lot = best.expected_value * _lot
                 _nc_lot = best.net_credit * _lot
                 _theta_day = best.net_greeks.theta * _lot if best.net_greeks else 0
@@ -1788,7 +1815,8 @@ def main():
                     'vol_regime': vr.value, 'trend_regime': tr.value, '_result': best,
                     'mp_lot': _mp_lot, 'ml_lot': _ml_lot, 'ev_lot': _ev_lot, 'nc_lot': _nc_lot,
                     'theta_day': _theta_day, 'rom_pct': _rom,
-                    'alt_strategy': _alt_name, 'alt_conviction': _alt_cv})
+                    'alt_strategy': _alt_name, 'alt_conviction': _alt_cv,
+                    'bias': get_bias(_sname), 'stype': STRATEGY_TYPE.get(best.name, 'HYBRID')})
 
     filtered = [t for t in all_trades if t['IVPercentile'] >= min_ivp and t['conviction_score'] >= min_cv]
     filtered.sort(key=lambda x: x['conviction_score'], reverse=True)
@@ -1797,10 +1825,8 @@ def main():
     avg_iv = df['IVPercentile'].mean(); avg_pcr = df['PCR'].mean()
     hc = len([t for t in filtered if t['conviction_score'] >= 65])
     # Market regime: credit vs debit favored
-    _credit_count = len([t for t in filtered if STRATEGY_TYPE.get(t['strategy'].replace('Short ','').replace('Long ',''), 
-        STRATEGY_TYPE.get(t['strategy'],'HYBRID')) == 'CREDIT'])
-    _debit_count = len([t for t in filtered if STRATEGY_TYPE.get(t['strategy'].replace('Short ','').replace('Long ',''),
-        STRATEGY_TYPE.get(t['strategy'],'HYBRID')) == 'DEBIT'])
+    _credit_count = len([t for t in filtered if get_strategy_type(t['strategy']) == 'CREDIT'])
+    _debit_count = len([t for t in filtered if get_strategy_type(t['strategy']) == 'DEBIT'])
     cusum_alerts = len(df[df['CUSUM_Alert'] == True])
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -1852,7 +1878,7 @@ def main():
                         <div><div class='sym'>{t['Instrument']}{cusum_warn}</div>
                         <div class='strat'>{t['strategy']}</div>
                         <span class='bias-tag {_btag}'>{get_bias_label(t['strategy'])}</span>
-                        <span class='bias-tag {"neut" if STRATEGY_TYPE.get(t["strategy"].replace("Short ","").replace("Long ",""), STRATEGY_TYPE.get(t["strategy"],"HYBRID"))=="CREDIT" else ("vol" if STRATEGY_TYPE.get(t["strategy"].replace("Short ","").replace("Long ",""), STRATEGY_TYPE.get(t["strategy"],"HYBRID"))=="DEBIT" else "warn")}'>{"₹ CREDIT" if STRATEGY_TYPE.get(t["strategy"].replace("Short ","").replace("Long ",""), STRATEGY_TYPE.get(t["strategy"],"HYBRID"))=="CREDIT" else ("₹ DEBIT" if STRATEGY_TYPE.get(t["strategy"].replace("Short ","").replace("Long ",""), STRATEGY_TYPE.get(t["strategy"],"HYBRID"))=="DEBIT" else "₹ HYBRID")}</span></div>
+                        <span class='bias-tag {get_type_tag(t["strategy"])[0]}'>{get_type_tag(t["strategy"])[1]}</span></div>
                         <div style="text-align:right;"><div style="font-size:1.8rem;font-weight:800;color:{cc};font-family:'JetBrains Mono',monospace;">{cv:.0f}</div>
                         <div style="font-size:0.6rem;color:#888;text-transform:uppercase;">Conviction</div></div></div>
                         <div class='gr'>
@@ -1917,7 +1943,8 @@ def main():
                 try:
                     res = score_strategy(sn, row, settings)
                     if res: strats.append(res)
-                except: continue
+                except Exception:
+                    continue
             strats.sort(key=lambda x: x.conviction_score, reverse=True)
 
             for rank, s in enumerate(strats[:5], 1):
@@ -1971,7 +1998,7 @@ def main():
     with tab3:
         if filtered:
             rdf = pd.DataFrame([{k: v for k, v in t.items() if k != '_result'} for t in filtered])
-            cols_show = ['Instrument','strategy','conviction_score','pop','mp_lot','ml_lot','rom_pct','theta_day',
+            cols_show = ['Instrument','strategy','bias','stype','conviction_score','pop','mp_lot','ml_lot','rom_pct','theta_day',
                         'ev','sharpe','kelly_frac','net_credit','max_profit','max_loss',
                         'IVPercentile','price','lot_size','risk_score','stability',
                         'alt_strategy','alt_conviction','vol_regime','trend_regime','CUSUM_Alert']

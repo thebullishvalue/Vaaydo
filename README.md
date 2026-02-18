@@ -1,50 +1,51 @@
 # VAAYDO (वायदो) — FnO Trade Intelligence
 
-**Version 3.1.0** · Hemrek Capital
-
-World's first god-tier options trading intelligence system. 20 mathematical engines, 10 strategy evaluators, ensemble probability fusion, regime-aware conviction scoring.
+Quantitative options strategy screener and analytics platform for NSE F&O.
 
 ---
 
-## Architecture (7-Layer Stack)
+## What It Does
+
+Screens **207+ NSE F&O securities** across **14 option strategies** using 20 quantitative engines. Produces conviction-scored trade recommendations with lot-adjusted financials (₹ P&L per lot, ROM%, daily theta income).
+
+The system automatically selects the optimal strategy per stock by cross-referencing IV regime, trend direction, volatility state, and DTE fitness.
+
+## Architecture
 
 ```
-L7 │ Kelly Criterion — Half-Kelly, confidence-weighted, capital-capped
-L6 │ Strategy Engine — 10 strategies, real MC for all, full 9-Greeks
-L5 │ Regime Intelligence — 6-Vol × 5-Trend + ADX + Kalman + CUSUM
-L4 │ BSM Pricing — Analytical + 9 Greeks (Δ Γ Θ ν ρ Vanna Volga Charm Speed)
-L3 │ Monte Carlo — 10K antithetic paths, generic payoff engine
-L2 │ Technical Analysis — RSI, ATR, ADX, MAs, Volume, Kalman Filter
-L1 │ Data Ingestion — Auto-fetch, Multi-Estimator Vol, GARCH, VRP
+DATA          NSE F&O Universe → Yahoo Finance → 252-day analytics
+                ↓
+ANALYTICS     Multi-Vol (C2C/Park/GK/YZ) → GARCH(1,1) → VRP → Kalman → CUSUM
+                ↓
+GATING        IVP Gate → DTE Gate → Premium Quality Check
+                ↓
+ENGINE        14 Strategies × BSM Pricing × MC(10K Antithetic) × Kelly
+                ↓
+SCORING       9-Factor Conviction: RA · POP · EV · Sharpe · Stab · IV · PQ · DTE · CUSUM
+                ↓
+OUTPUT        Trade Radar → Deep Analysis → Rankings → Probability Lab
 ```
 
-## v3.1.0 Bugfixes (14 Fixes)
+## Strategy Universe
 
-| Fix | Bug | Resolution |
-|-----|-----|------------|
-| #1 | Strike collapse when em < gap | Enforce max(em, gap) for all strike placement |
-| #2 | Iron Butterfly wing width = 0 | ww = max(snap(em*1.2, gap), min_wing) |
-| #3 | Sharpe 10+ digit values | clamp_sharpe(): return 0 if std < 0.01, cap [-5, 5] |
-| #4 | Arbitrary max loss for unlimited risk | span_margin(): max(15% underlying, 2σ monthly) |
-| #5 | EV normalization wrong for ₹1000+ stocks | Normalize as ev/max_profit ratio, not absolute ₹ |
-| #6 | Risk-Reward explosion (ml=0.01 floor) | clamp_rr(): cap at [0, 50] |
-| #7 | Bull Put/Bear Call strikes collapse | Enforce lp ≤ sp - min_wing |
-| #8 | 5/10 strategies used fake MC | All 10 now use MC.analyze() with real simulation |
-| #9 | IC/IB/Calendar Greeks = theta only | compute_full_greeks() for all 9 Greeks on every strategy |
-| #10 | Calendar max_profit fabricated | Proper BSM back month residual at front expiry |
-| #11 | BWB net credit had ×0.1 multiplier | Correct payoff: 2×center - low - high |
-| #12 | Ratio Spread mp overstated | Correct: (sK-lK) + net_credit at short strike |
-| #13 | Zero-premium strategies displayed | Skip when net_credit < ₹0.50 |
-| #14 | Missing lot sizes | 110+ NSE lot sizes integrated |
+| Bias | Credit | Debit |
+|------|--------|-------|
+| ▲ Bullish | Bull Put Spread | Bull Call Spread |
+| ▼ Bearish | Bear Call Spread | Bear Put Spread |
+| ◆ Neutral | Iron Condor · Iron Butterfly · Short Strangle · Short Straddle · Jade Lizard | Calendar Spread |
+| ⚡ Volatile | — | Long Straddle · Long Strangle |
 
-## New in v3.1
+Hybrid: Broken Wing Butterfly · Ratio Spread
 
-- **Kalman Filter** (§5.3) — Adaptive trend smoothing for regime detection
-- **ADX** (§4.3) — Trend strength confirmation (threshold 25)
-- **SPAN Margin** — Realistic max loss for unlimited-risk strategies
-- **Generic MC Engine** — MC.analyze() works for any multi-leg payoff
-- **Greeks Algebra** — Greeks dataclass with add/negate/scale operators
-- **Lot Sizes** — 110+ NSE F&O lot sizes for position sizing
+## Intelligence Layers
+
+| Layer | What It Does |
+|-------|-------------|
+| IVP Gate | Blocks credit strategies when IV too low; blocks debit when IV too high |
+| DTE Gate | Filters by viable expiry range (Calendar needs 14+ DTE, spreads work at 1+) |
+| Regime Alignment | Cross-refs IV(50%) × trend(40%) × vol(10%) per strategy |
+| Premium Quality | Strategy-specific credit/risk thresholds (6% for naked, 20% for IC, 25% for spreads) |
+| CUSUM Penalty | Structural break → 0.60× neutral strats, 1.05× volatile strats |
 
 ## Quick Start
 
@@ -53,13 +54,36 @@ pip install -r requirements.txt
 streamlit run vaaydo.py
 ```
 
-## Key Formulas
+Requires Python 3.10+ and network access to Yahoo Finance.
 
-**Sharpe** (clamped): `clamp(EV/σ, -5, 5)` — returns 0 if σ < 0.01
-**Conviction** (§9.1): `20%×RA + 25%×POP + 15%×(EV/MaxProfit) + 20%×Sharpe + 10%×Stability + 10%×IV`
-**Ensemble POP** (§9.2): Inverse-variance weighted BSM+MC fusion (MC gets ~2.56× weight)
-**SPAN Margin**: `max(0.15×S, 2σ_monthly)` per lot
+## Engines
 
-## License
+| Engine | Purpose |
+|--------|---------|
+| BSM | Full pricing + 9 Greeks (Δ Γ Θ ν ρ Vanna Volga Charm Speed) |
+| Multi-Vol | Close-to-Close, Parkinson, Garman-Klass, Yang-Zhang estimators |
+| GARCH(1,1) | Conditional variance, persistence (α+β), half-life |
+| VRP | Regime-adaptive IV from realized vol composite |
+| Monte Carlo | 10K antithetic paths, strategy-specific payoff simulation |
+| Kelly | Continuous f* = μ/σ², capital-normalized, half-Kelly scaled |
+| Ensemble POP | Inverse-variance BSM + MC probability fusion |
+| SPAN Margin | DTE-scaled max-loss for unlimited-risk strategies |
 
-MIT License · Copyright 2026 Hemrek Capital
+## Tabs
+
+| Tab | Content |
+|-----|---------|
+| ⚡ Trade Radar | Top 9 cards: lot-adjusted P&L, ROM%, Θ/day, alternative strategy |
+| 🔬 Deep Analysis | Per-security: vol estimators, expected move, 5-strategy ranking with payoffs |
+| 📊 Rankings | Full sortable table with CSV export |
+| 📐 Probability Lab | MC terminal distribution, sample paths, BSM Greeks chain |
+
+## Configuration
+
+- **Expiry Date** — defaults to next Thursday with ≥3 DTE
+- **Min IV Percentile** — filter by IV environment (drives credit/debit selection)
+- **Min Conviction** — minimum score threshold
+
+---
+
+Version 3.3.0 · Hemrek Capital
