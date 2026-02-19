@@ -663,7 +663,7 @@ class PortfolioAwareness:
         remaining = list(range(len(candidates)))
 
         # First: highest conviction mean
-        best = max(remaining, key=lambda i: candidates[i].get('conviction_mean', 0))
+        best = max(remaining, key=lambda i: candidates[i].get('conviction_mean', candidates[i].get('conviction_score', 0)))
         selected.append(best)
         remaining.remove(best)
 
@@ -671,7 +671,7 @@ class PortfolioAwareness:
             best_score, best_idx = -1, remaining[0]
             for idx in remaining:
                 c = candidates[idx]
-                conv = c.get('conviction_mean', 0)
+                conv = c.get('conviction_mean', c.get('conviction_score', 0))
                 penalty = 0
                 for si in selected:
                     s = candidates[si]
