@@ -6,46 +6,42 @@ Quantitative options strategy screener and analytics platform for NSE F&O.
 
 ## What It Does
 
-Screens **207+ NSE F&O securities** across **14 option strategies** using 20 quantitative engines. Produces conviction-scored trade recommendations with lot-adjusted financials (₹ P&L per lot, ROM%, daily theta income).
-
-The system automatically selects the optimal strategy per stock by cross-referencing IV regime, trend direction, volatility state, and DTE fitness.
+Screens **207+ NSE F&O securities** across **14 option strategies** using a fully adaptive intelligence engine. Every parameter is derived from the universe distribution at runtime — zero hardcoded thresholds, zero assumed weights.
 
 ## Architecture
 
 ```
-DATA          NSE F&O Universe → Yahoo Finance → 252-day analytics
-                ↓
-ANALYTICS     Multi-Vol (C2C/Park/GK/YZ) → GARCH(1,1) → VRP → Kalman → CUSUM
-                ↓
-GATING        IVP Gate → DTE Gate → Premium Quality Check
-                ↓
-ENGINE        14 Strategies × BSM Pricing × MC(10K Antithetic) × Kelly
-                ↓
-SCORING       9-Factor Conviction: RA · POP · EV · Sharpe · Stab · IV · PQ · DTE · CUSUM
-                ↓
-OUTPUT        Trade Radar → Deep Analysis → Rankings → Probability Lab
+SIGNAL SPACE     → Orthogonalize signals, measure information, detect crowding
+FUZZY REGIME     → Continuous probability distributions (not discrete labels)
+ADAPTIVE GATING  → Sigmoid/Beta viability curves (never binary)
+ENSEMBLE         → Disagreement-weighted BSM + MC fusion
+SCORING          → Bayesian conviction with full uncertainty (mean ± std, CI)
+META-INTELLIGENCE → Reflexivity, edge decay, exploration, anti-fragility
+ENTROPY GOVERNOR → System-wide risk budget scales with uncertainty
+ADAPTIVE KELLY   → Bayesian sizing × drawdown sensitivity
+PORTFOLIO        → Cross-sectional diversification, ruin prevention
 ```
 
-## Strategy Universe
+## What Makes v4.0 Different
 
-| Bias | Credit | Debit |
-|------|--------|-------|
-| ▲ Bullish | Bull Put Spread | Bull Call Spread |
-| ▼ Bearish | Bear Call Spread | Bear Put Spread |
-| ◆ Neutral | Iron Condor · Iron Butterfly · Short Strangle · Short Straddle · Jade Lizard | Calendar Spread |
-| ⚡ Volatile | — | Long Straddle · Long Strangle |
+| v3.x (Threshold Machine) | v4.0 (Adaptive Intelligence) |
+|---|---|
+| `if ivp < 20: BLOCK` | Sigmoid viability from universe percentile |
+| Conviction = 67.3 (point estimate) | Conv = 67.3 ± 8.2, CI = [56.8, 77.8] |
+| Fixed weights: RA 20%, POP 22%, EV 12% | Certainty-weighted: uncertain factors contribute less |
+| `MIN_PREMIUM = ₹0.50` (same for ₹11 and ₹35,000 stock) | 0.02% of stock price × DTE factor |
+| `vol_regime = HIGH` (discrete) | P(high) = 0.38, P(elevated) = 0.30, ... |
+| Always picks highest conviction | Thompson sampling for exploration |
+| 139/204 = Bull Put Spread | Reflexivity detector penalizes concentration |
 
-Hybrid: Broken Wing Butterfly · Ratio Spread
+## Files
 
-## Intelligence Layers
-
-| Layer | What It Does |
-|-------|-------------|
-| IVP Gate | Blocks credit strategies when IV too low; blocks debit when IV too high |
-| DTE Gate | Filters by viable expiry range (Calendar needs 14+ DTE, spreads work at 1+) |
-| Regime Alignment | Cross-refs IV(50%) × trend(40%) × vol(10%) per strategy |
-| Premium Quality | Strategy-specific credit/risk thresholds (6% for naked, 20% for IC, 25% for spreads) |
-| CUSUM Penalty | Structural break → 0.60× neutral strats, 1.05× volatile strats |
+| File | Purpose |
+|------|---------|
+| `vaaydo.py` | Main Streamlit application (2,067 lines) |
+| `adaptive_engine.py` | v4.0 intelligence engine (897 lines, 14 classes, 57 methods) |
+| `ARCHITECTURE.md` | Full system design document |
+| `CHANGELOG.md` | Version history |
 
 ## Quick Start
 
@@ -54,36 +50,11 @@ pip install -r requirements.txt
 streamlit run vaaydo.py
 ```
 
-Requires Python 3.10+ and network access to Yahoo Finance.
+## Requirements
 
-## Engines
-
-| Engine | Purpose |
-|--------|---------|
-| BSM | Full pricing + 9 Greeks (Δ Γ Θ ν ρ Vanna Volga Charm Speed) |
-| Multi-Vol | Close-to-Close, Parkinson, Garman-Klass, Yang-Zhang estimators |
-| GARCH(1,1) | Conditional variance, persistence (α+β), half-life |
-| VRP | Regime-adaptive IV from realized vol composite |
-| Monte Carlo | 10K antithetic paths, strategy-specific payoff simulation |
-| Kelly | Continuous f* = μ/σ², capital-normalized, half-Kelly scaled |
-| Ensemble POP | Inverse-variance BSM + MC probability fusion |
-| SPAN Margin | DTE-scaled max-loss for unlimited-risk strategies |
-
-## Tabs
-
-| Tab | Content |
-|-----|---------|
-| ⚡ Trade Radar | Top 9 cards: lot-adjusted P&L, ROM%, Θ/day, alternative strategy |
-| 🔬 Deep Analysis | Per-security: vol estimators, expected move, 5-strategy ranking with payoffs |
-| 📊 Rankings | Full sortable table with CSV export |
-| 📐 Probability Lab | MC terminal distribution, sample paths, BSM Greeks chain |
-
-## Configuration
-
-- **Expiry Date** — defaults to next Thursday with ≥3 DTE
-- **Min IV Percentile** — filter by IV environment (drives credit/debit selection)
-- **Min Conviction** — minimum score threshold
+- Python 3.10+
+- Network access to Yahoo Finance
 
 ---
 
-Version 3.3.0 · Hemrek Capital
+Version 4.0.0 · Hemrek Capital
