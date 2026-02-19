@@ -1082,6 +1082,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
                     {'type':'Sell Put','strike':pK,'premium':pp,'qty':1}]
             pop_b = max(0, BSM.prob_otm(S,cK,T,iv,'call') + BSM.prob_otm(S,pK,T,iv,'put') - 1)
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':cK,'otype':'call','qty':-1}, {'strike':pK,'otype':'put','qty':-1}])
             return _adaptive_tail(name, legs, nc, ml, pop_b, pop_m, ev, std, ng, iv,
                 pK-nc, cK+nc, nc=nc, width=cK-pK, settings=settings, regime=regime)
 
@@ -1095,6 +1096,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
                     {'type':'Sell Put','strike':K,'premium':pp,'qty':1}]
             pop_b = max(0, BSM.prob_otm(S,K+nc,T,iv,'call') + BSM.prob_otm(S,K-nc,T,iv,'put') - 1)
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':K,'otype':'call','qty':-1}, {'strike':K,'otype':'put','qty':-1}])
             return _adaptive_tail(name, legs, nc, ml, pop_b, pop_m, ev, std, ng, iv,
                 K-nc, K+nc, nc=nc, width=0, settings=settings, regime=regime)
 
@@ -1123,6 +1125,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
                     {'type':'Buy Put','strike':lp,'premium':BSM.put(S,lp,T,r,iv),'qty':1}]
             pop_b = max(0, BSM.prob_otm(S,sc,T,iv,'call') + BSM.prob_otm(S,sp,T,iv,'put') - 1)
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':sc,'otype':'call','qty':-1}, {'strike':lc,'otype':'call','qty':1}, {'strike':sp,'otype':'put','qty':-1}, {'strike':lp,'otype':'put','qty':1}])
             return _adaptive_tail(name, legs, nc, ml, pop_b, pop_m, ev, std, ng, iv,
                 sp-nc, sc+nc, nc=nc, width=w_spread, settings=settings, regime=regime)
 
@@ -1140,6 +1143,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
                     {'type':'Buy Put','strike':K-ww,'premium':BSM.put(S,K-ww,T,r,iv),'qty':1}]
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
             pop_b = max(0, BSM.prob_otm(S,K+nc,T,iv,'call') + BSM.prob_otm(S,K-nc,T,iv,'put') - 1)
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':K,'otype':'call','qty':-1}, {'strike':K,'otype':'put','qty':-1}, {'strike':K,'otype':'call','qty':1}, {'strike':K,'otype':'put','qty':1}])
             return _adaptive_tail(name, legs, nc, ml, pop_b, pop_m, ev, std, ng, iv,
                 K-nc, K+nc, nc=nc, width=ww, settings=settings, regime=regime)
 
@@ -1161,6 +1165,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
                     {'type':'Buy Put','strike':lp_k,'premium':BSM.put(S,lp_k,T,r,iv),'qty':1}]
             pop_b = BSM.prob_otm(S, sp_k, T, iv, 'put')
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':sp_k,'otype':'put','qty':-1}, {'strike':lp_k,'otype':'put','qty':1}])
             return _adaptive_tail(name, legs, nc, ml, pop_b, pop_m, ev, std, ng, iv,
                 sp_k-nc, S*10, nc=nc, width=sp_k-lp_k, settings=settings, regime=regime)
 
@@ -1181,6 +1186,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
                     {'type':'Buy Call','strike':lc_k,'premium':BSM.call(S,lc_k,T,r,iv),'qty':1}]
             pop_b = BSM.prob_otm(S, sc_k, T, iv, 'call')
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':sc_k,'otype':'call','qty':-1}, {'strike':lc_k,'otype':'call','qty':1}])
             return _adaptive_tail(name, legs, nc, ml, pop_b, pop_m, ev, std, ng, iv,
                 0, sc_k+nc, nc=nc, width=lc_k-sc_k, settings=settings, regime=regime)
 
@@ -1203,6 +1209,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
             pop_m, ev, std = MC.analyze(S, iv, T, [
                 {'type':'Buy Call','strike':lc_k,'premium':lc_p,'qty':1},
                 {'type':'Sell Call','strike':sc_k,'premium':sc_p,'qty':1}], sim_vol=sim_vol)
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':lc_k,'otype':'call','qty':1}, {'strike':sc_k,'otype':'call','qty':-1}])
             return _adaptive_tail(name, legs, mp, ml, pop_b, pop_m, ev, std, ng, iv,
                 lc_k+nd, sc_k, nc=0, width=sc_k-lc_k, settings=settings, regime=regime)
 
@@ -1225,6 +1232,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
             pop_m, ev, std = MC.analyze(S, iv, T, [
                 {'type':'Buy Put','strike':lp_k,'premium':lp_p,'qty':1},
                 {'type':'Sell Put','strike':sp_k,'premium':sp_p,'qty':1}], sim_vol=sim_vol)
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':lp_k,'otype':'put','qty':1}, {'strike':sp_k,'otype':'put','qty':-1}])
             return _adaptive_tail(name, legs, mp, ml, pop_b, pop_m, ev, std, ng, iv,
                 sp_k, lp_k-nd, nc=0, width=lp_k-sp_k, settings=settings, regime=regime)
 
@@ -1246,6 +1254,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
             ev = float(np.mean(pnl))
             std = float(np.std(pnl))
             pop_b = min(1.0, (1 - BSM.prob_otm(S,K+nd,T,iv,'call')) + (1 - BSM.prob_otm(S,K-nd,T,iv,'put')))
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':K,'otype':'call','qty':1}, {'strike':K,'otype':'put','qty':1}])
             return _adaptive_tail(name, legs, mp, ml, pop_b, pop_m, ev, std, ng, iv,
                 K-nd, K+nd, nc=0, width=0, settings=settings, regime=regime)
 
@@ -1270,6 +1279,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
             ev = float(np.mean(pnl))
             std = float(np.std(pnl))
             pop_b = min(1.0, (1 - BSM.prob_otm(S,cK+nd,T,iv,'call')) + (1 - BSM.prob_otm(S,pK-nd,T,iv,'put')))
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':cK,'otype':'call','qty':1}, {'strike':pK,'otype':'put','qty':1}])
             return _adaptive_tail(name, legs, mp, ml, pop_b, pop_m, ev, std, ng, iv,
                 pK-nd, cK+nd, nc=0, width=0, settings=settings, regime=regime)
 
@@ -1288,6 +1298,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
                     {'type':'Buy Put','strike':lp_k,'premium':lp_v,'qty':1}]
             pop_m, ev, std = MC.analyze(S, iv, T, legs, sim_vol=sim_vol)
             pop_b = max(0, BSM.prob_otm(S,cK,T,iv,'call') + BSM.prob_otm(S,sp_k,T,iv,'put') - 1)
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':cK,'otype':'call','qty':-1}, {'strike':sp_k,'otype':'put','qty':-1}, {'strike':lp_k,'otype':'put','qty':1}])
             return _adaptive_tail(name, legs, nc, ml, pop_b, pop_m, ev, std, ng, iv,
                 sp_k-nc, cK+nc, nc=nc, width=sp_k-lp_k, settings=settings, regime=regime)
 
@@ -1318,6 +1329,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
             pop_m = float(np.mean(cal_pnl > 0))
             ev = float(np.mean(cal_pnl))
             std = float(np.std(cal_pnl))
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':K,'otype':'call','qty':-1}, {'strike':K,'otype':'call','qty':1}])
             return _adaptive_tail(name, legs, mp, ml, pop_b, pop_m, ev, std, ng, iv,
                 K-mp, K+mp, nc=0, width=0, settings=settings, regime=regime)
 
@@ -1347,6 +1359,7 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
             ev = float(np.mean(bwb_pnl))
             std = float(np.std(bwb_pnl))
             pop_b = 0.50
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':lo,'otype':'call','qty':1}, {'strike':c,'otype':'call','qty':-1}, {'strike':hi,'otype':'call','qty':1}])
             return _adaptive_tail(name, legs, mp, ml, pop_b, pop_m, ev, std, ng, iv,
                 lo, hi, nc=nc, width=hi-lo, settings=settings, regime=regime)
 
@@ -1370,12 +1383,19 @@ def score_strategy(name, stock, settings, iv_mult=1.0, regime=None):
             ev = float(np.mean(ratio_pnl))
             std = float(np.std(ratio_pnl))
             pop_b = 0.55 if 'UP' in tr.value or tr==TrendRegime.NEUTRAL else 0.40
+            ng = compute_full_greeks(S, T, r, iv, [{'strike':lK,'otype':'call','qty':1}, {'strike':sK,'otype':'call','qty':-1}])
             return _adaptive_tail(name, legs, mp, ml, pop_b, pop_m, ev, std, ng, iv,
                 lK, 2*sK-lK+nc, nc=nc, width=sK-lK, settings=settings, regime=regime)
 
-    except Exception:
+    except Exception as _inner_ex:
+        import traceback as _tb
+        # v4.0: Log first error per run to help diagnose issues
+        if not hasattr(score_strategy, '_logged'):
+            score_strategy._logged = True
+            import sys
+            print(f"[VAAYDO] score_strategy error: {name} → {type(_inner_ex).__name__}: {_inner_ex}", file=sys.stderr)
+            _tb.print_exc(file=sys.stderr)
         return None
-    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1652,28 +1672,41 @@ def main():
 
     with st.spinner("Running adaptive scoring: BSM + MC + Bayesian conviction..."):
         all_trades = []
+        _diag = {'stocks': 0, 'skipped_data': 0, 'strategies_tried': 0, 'strategies_scored': 0, 'strategies_viab_skip': 0, 'stocks_with_best': 0, 'first_error': None}
+        score_strategy._logged = False  # reset error logging per run
         for _, row in df.iterrows():
             rd = row.to_dict()
             if pd.isna(rd.get('price')) or pd.isna(rd.get('ATMIV')) or rd['price'] <= 0 or rd['ATMIV'] <= 0:
+                _diag['skipped_data'] += 1
                 continue
+            _diag['stocks'] += 1
             # v4.0: Compute fuzzy regime per stock
             regime = _engine.compute_regime(rd)
             best = None; alt = None
             for sn in ALL_STRATS:
                 # v4.0: Continuous viability replaces binary gates
                 viability = _engine.compute_viability(sn, regime, settings['dte'])
-                if viability < 0.05: continue  # near-zero viability = skip (graceful)
+                if viability < 0.05:
+                    _diag['strategies_viab_skip'] += 1
+                    continue  # near-zero viability = skip (graceful)
+                _diag['strategies_tried'] += 1
                 try:
                     res = score_strategy(sn, rd, settings, iv_mult=1.0, regime=regime)
                     if res:
+                        _diag['strategies_scored'] += 1
                         if best is None or res.conviction_score > best.conviction_score:
                             alt = best
                             best = res
                         elif alt is None or res.conviction_score > alt.conviction_score:
                             alt = res
-                except Exception:
+                except Exception as _ex:
+                    if _diag['first_error'] is None:
+                        import traceback as _tb
+                        _diag['first_error'] = f"{sn} on {rd.get('Instrument','?')}: {type(_ex).__name__}: {_ex}\n{_tb.format_exc()}"
                     continue
+            # ── END of strategy loop ── now build trade entry from best
             if best:
+                _diag['stocks_with_best'] += 1
                 vr = detect_vol_regime(rd.get('IVPercentile', 50))
                 tr = detect_trend(rd['price'], rd.get('ma20_daily', rd['price']),
                     rd.get('ma50_daily', rd['price']), rd.get('rsi_daily', 50),
@@ -1721,6 +1754,11 @@ def main():
     filtered.sort(key=lambda x: x['conviction_score'], reverse=True)
     # v4.0: System entropy for governance
     _sys_entropy = _engine.system_entropy() if _engine else 0.5
+
+    # Diagnostic toast
+    st.toast(f"🔬 Stocks: {_diag['stocks']} | Tried: {_diag['strategies_tried']} | Scored: {_diag['strategies_scored']} | Best: {_diag['stocks_with_best']} | Trades: {len(all_trades)} | Filtered: {len(filtered)}", icon="📊")
+    if _diag['first_error']:
+        st.warning(f"First scoring error:\n```\n{_diag['first_error'][:500]}\n```")
 
     # ── METRICS BAR ──
     avg_iv = df['IVPercentile'].mean(); avg_pcr = df['PCR'].mean()
