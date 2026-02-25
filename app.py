@@ -46,9 +46,26 @@ from typing import List, Dict, Tuple, Optional
 from enum import Enum
 from adaptive_engine import AdaptiveEngine, STRATEGY_STRUCTURE, AdaptiveGating, FuzzyRegime, SignalSpace
 from datetime import datetime, timedelta, date
-import yfinance as yf
 import requests
 import warnings
+# v4.1: Kite Connect data pipeline (replaces yfinance)
+try:
+    from kite_data_pipeline import KiteDataPipeline, render_kite_login, OptionChain
+    KITE_AVAILABLE = True
+except ImportError:
+    KITE_AVAILABLE = False
+# v4.1: Validation framework
+try:
+    from validation_framework import ValidationRunner, ValidationReport
+    VALIDATION_AVAILABLE = True
+except ImportError:
+    VALIDATION_AVAILABLE = False
+# yfinance as fallback only
+try:
+    import yfinance as yf
+    YF_AVAILABLE = True
+except ImportError:
+    YF_AVAILABLE = False
 
 warnings.filterwarnings('ignore')
 
@@ -57,7 +74,7 @@ warnings.filterwarnings('ignore')
 # ═══════════════════════════════════════════════════════════════════════════════
 
 st.set_page_config(page_title="VAAYDO | FnO Intelligence", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
-VERSION = "4.0.0"
+VERSION = "4.1.0"
 
 # v4.0: Global engine instance (initialized in main())
 _engine = None
@@ -1631,14 +1648,35 @@ def main():
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         st.markdown(f"""<div class='ib'><p style='font-size:0.72rem; margin:0; color:#888; line-height:1.5;'>
-            <strong>v4.0 Adaptive Engine</strong><br>
+            <strong>v4.1 Adaptive Engine</strong><br>
             <strong>Scoring:</strong> Bayesian conviction (certainty-weighted)<br>
             <strong>Regime:</strong> Fuzzy (continuous probability vectors)<br>
             <strong>Gating:</strong> Sigmoid/Beta viability (never binary)<br>
             <strong>Kelly:</strong> Uncertainty-discounted × entropy budget<br>
             <strong>Strikes:</strong> Delta-targeted (not EM multipliers)<br>
             <strong>Meta:</strong> Reflexivity · Entropy Gov · Diversify<br>
-            <strong>Strategies:</strong> 14 Active · 4 bias · 3 types (C/D/H)</p></div>""", unsafe_allow_html=True)
+            <strong>Strategies:</strong> 14 Active · 4 bias · 3 types (C/D/H)<br>
+            <strong>Data:</strong> Kite Connect / yfinance fallback</p></div>""", unsafe_allow_html=True)
+
+        # v4.1: Data Source Selection
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="stitle">🔗 Data Source</div>', unsafe_allow_html=True)
+        _kite_connected = False
+        if KITE_AVAILABLE:
+            _data_source = st.radio("Source", ["Kite Connect", "yfinance (Fallback)"],
+                                     index=0, key="data_source", horizontal=True)
+            if _data_source == "Kite Connect":
+                pipeline, _kite_connected = render_kite_login(sidebar=False)
+                if _kite_connected:
+                    st.session_state.kite_pipeline = pipeline
+                    st.session_state.use_kite = True
+                else:
+                    st.session_state.use_kite = False
+            else:
+                st.session_state.use_kite = False
+        else:
+            st.caption("📦 Kite Connect: install `kite_data_pipeline.py`")
+            st.session_state.use_kite = False
 
     # ── LANDING PAGE (before analysis runs) ──
     if not st.session_state.get('analysis_run', False):
@@ -1651,16 +1689,31 @@ def main():
     st.session_state.last_expiry = str(expiry_date)
 
     # ── DATA FETCH ──
-    with st.spinner("Fetching F&O universe..."):
-        symbols, sym_status = get_fno_symbols()
-        symbols_ns = [s + ".NS" for s in symbols]
-    with st.spinner(f"Downloading & computing analytics for {len(symbols_ns)} securities..."):
-        df, data_status = fetch_all_data(symbols_ns)
+    _use_kite = st.session_state.get('use_kite', False)
+    if _use_kite and 'kite_pipeline' in st.session_state:
+        # v4.1: Kite Connect data pipeline
+        kpipe = st.session_state.kite_pipeline
+        with st.spinner("Fetching F&O universe from Kite Connect..."):
+            symbols, sym_status = kpipe.get_fno_symbols()
+        with st.spinner(f"Downloading & computing analytics for {len(symbols)} securities via Kite..."):
+            df, data_status = kpipe.fetch_all_data(symbols)
+        _data_source_label = "Kite Connect"
+    else:
+        # Fallback: yfinance
+        with st.spinner("Fetching F&O universe..."):
+            symbols, sym_status = get_fno_symbols()
+            symbols_ns = [s + ".NS" for s in symbols]
+        with st.spinner(f"Downloading & computing analytics for {len(symbols_ns)} securities..."):
+            df, data_status = fetch_all_data(symbols_ns)
+        _data_source_label = "yfinance"
     if df.empty:
         st.error(f"Data fetch failed: {data_status}")
-        st.info("Ensure network access to `*.yahoo.com`. Check firewall / proxy settings.")
+        if _data_source_label == "yfinance":
+            st.info("Ensure network access to `*.yahoo.com`. Check firewall / proxy settings.")
+        else:
+            st.info("Check Kite Connect session validity. Token may have expired.")
         return
-    st.toast(f"🔌 {sym_status} → {data_status}", icon="✅")
+    st.toast(f"🔌 [{_data_source_label}] {sym_status} → {data_status}", icon="✅")
 
     # ── COMPUTE STRATEGIES ──
     # ── v4.0 ADAPTIVE ENGINE INITIALIZATION ──
@@ -1810,7 +1863,7 @@ def main():
     st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
     # ── TABS ──
-    tab1, tab2, tab3, tab4 = st.tabs(["⚡ Trade Radar", "🔬 Deep Analysis", "📊 Rankings", "📐 Probability Lab"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["⚡ Trade Radar", "🔬 Deep Analysis", "📊 Rankings", "📐 Probability Lab", "🛡️ Validation"])
 
     with tab1:
         st.markdown("<div style='margin-bottom:1rem;'><span style='font-size:1.1rem;font-weight:700;color:#EAEAEA;'>Top FnO Opportunities</span><span style='color:#888;font-size:0.85rem;margin-left:0.75rem;'>§9.1 Unified Conviction · Ensemble POP · Antithetic MC</span></div>", unsafe_allow_html=True)
@@ -2018,6 +2071,84 @@ def main():
                              'C.Θ': f"{cg.theta:.2f}", 'P.Θ': f"{pg.theta:.2f}", 'ν': f"{cg.vega:.2f}",
                              'Vanna': f"{cg.vanna:.4f}", 'Volga': f"{cg.volga:.4f}"})
             st.dataframe(pd.DataFrame(gdata), width='stretch', hide_index=True)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # v4.1: VALIDATION TAB
+    # ═══════════════════════════════════════════════════════════════════
+    with tab5:
+        if not VALIDATION_AVAILABLE:
+            st.warning("Validation framework not available. Ensure `validation_framework.py` is in the project.")
+        else:
+            st.markdown("<div style='margin-bottom:1rem;'><span style='font-size:1.1rem;font-weight:700;color:#EAEAEA;'>Pipeline Validation & Deployment Readiness</span><span style='color:#888;font-size:0.85rem;margin-left:0.75rem;'>17-Point System Audit</span></div>", unsafe_allow_html=True)
+
+            if st.button("🛡️ Run Full Validation Suite", type="primary", key="run_validation"):
+                with st.spinner("Running 17-point validation framework..."):
+                    runner = ValidationRunner()
+
+                    # I. Data Integrity
+                    runner.run_data_integrity(df)
+
+                    # II. Predictive Validation
+                    runner.run_predictive_validation(df)
+
+                    # III. Regime Validation
+                    if _engine and hasattr(_engine, 'regime_states'):
+                        runner.run_regime_validation(_engine.regime_states)
+
+                    # VI. Execution Realism
+                    if all_trades:
+                        runner.run_execution_realism(all_trades)
+
+                    # VII. Robustness (using first stock as example)
+                    if all_trades:
+                        _sample = all_trades[0]
+                        def _score_proxy(data):
+                            return {'conviction_score': data.get('conviction_score', 50),
+                                    'sharpe': data.get('sharpe', 0)}
+                        runner.run_robustness(_score_proxy, _sample)
+
+                    # IX. Capital Gate
+                    runner.run_capital_gate(live_shadow_days=0, psychological_assessed=False)
+
+                    report = runner.report
+                    st.session_state.validation_report = report
+
+            # Display results
+            if 'validation_report' in st.session_state:
+                report = st.session_state.validation_report
+                summary = report.summary()
+
+                # Overall status
+                _gate_cls = 'ok' if summary['deployment_ready'] else 'bad'
+                _gate_msg = '✅ DEPLOYMENT READY' if summary['deployment_ready'] else '❌ NOT READY'
+
+                vc1, vc2, vc3, vc4 = st.columns(4)
+                with vc1: st.markdown(f"<div class='mc {_gate_cls}'><h4>Status</h4><h2 style='font-size:1.2rem;'>{_gate_msg}</h2></div>", unsafe_allow_html=True)
+                with vc2: st.markdown(f"<div class='mc gold'><h4>Overall Score</h4><h2>{summary['overall_score']:.1%}</h2><div class='sub'>{summary['passed']}/{summary['total']} passed</div></div>", unsafe_allow_html=True)
+                with vc3:
+                    _crit_cls = 'ok' if summary['critical_failures'] == 0 else 'bad'
+                    st.markdown(f"<div class='mc {_crit_cls}'><h4>Critical Failures</h4><h2>{summary['critical_failures']}</h2></div>", unsafe_allow_html=True)
+                with vc4: st.markdown(f"<div class='mc'><h4>Tests Run</h4><h2>{summary['total']}</h2></div>", unsafe_allow_html=True)
+
+                st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+
+                # Results by section
+                for section, tests in report.by_section().items():
+                    with st.expander(f"{'✅' if all(t.passed for t in tests) else '⚠️'} {section} ({sum(t.passed for t in tests)}/{len(tests)})"):
+                        for t in tests:
+                            icon = '✅' if t.passed else ('❌' if t.severity == 'CRITICAL' else '⚠️')
+                            severity_color = '#ef4444' if t.severity == 'CRITICAL' else ('#f59e0b' if t.severity == 'WARNING' else '#888')
+                            st.markdown(f"""<div style='padding:0.75rem;background:#1A1A1A;border-radius:8px;border-left:3px solid {severity_color};margin-bottom:0.5rem;'>
+                                <div style='display:flex;justify-content:space-between;'>
+                                <span style='font-weight:600;color:#EAEAEA;'>{icon} [{t.test_id}] {t.test_name}</span>
+                                <span style='font-family:JetBrains Mono;color:{severity_color};font-size:0.8rem;'>{t.severity} · {t.score:.1%}</span></div>
+                                <div style='color:#888;font-size:0.8rem;margin-top:0.25rem;'>{t.message}</div></div>""", unsafe_allow_html=True)
+
+                # Export report
+                if st.button("📋 Export Report (JSON)", key="export_validation"):
+                    st.code(report.to_json(), language="json")
+            else:
+                st.info("Click **Run Full Validation Suite** to audit data integrity, predictive power, regime detection, execution realism, and deployment readiness.")
 
 
 if 'sel' not in st.session_state: st.session_state.sel = None
