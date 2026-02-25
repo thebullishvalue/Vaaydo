@@ -28,6 +28,10 @@ from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass, field
 import warnings
 import logging
+import re
+from urllib.parse import urlparse, parse_qs
+from kiteconnect import KiteConnect
+import onetimepass as otp
 
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
@@ -840,12 +844,62 @@ def init_kite_session(api_key: str, api_secret: str, access_token: str = "") -> 
         pipeline.initialize()
     return pipeline
 
+def get_request_token(credentials: dict) -> str:
+    """Automate Zerodha login and return request_token using requests."""
+    # Initialize KiteConnect instance
+    kite = KiteConnect(api_key=credentials["api_key"])
+
+    # Create a session to persist cookies
+    session = requests.Session()
+
+    # Step 1: Get login URL (but we simulate instead)
+    login_url = kite.login_url()
+    response = session.get(login_url)  # Warm up session
+
+    # Step 2: Prepare and submit login payload
+    login_payload = {
+        "user_id": credentials["username"],
+        "password": credentials["password"],
+    }
+    login_response = session.post("https://kite.zerodha.com/api/login", data=login_payload)
+
+    if login_response.status_code != 200:
+        raise ValueError("Login failed: Invalid username/password")
+
+    # Step 3: Handle TOTP (2FA)
+    totp_payload = {
+        "user_id": credentials["username"],
+        "request_id": login_response.json()["data"]["request_id"],
+        "twofa_value": otp.get_totp(credentials["totp_key"]),
+        "twofa_type": "totp",
+        "skip_session": True,
+    }
+    totp_response = session.post("https://kite.zerodha.com/api/twofa", data=totp_payload)
+
+    if totp_response.status_code != 200:
+        raise ValueError("2FA failed: Invalid TOTP")
+
+    # Step 4: Extract request_token from redirect simulation
+    try:
+        final_response = session.get(kite.login_url())
+        parse_result = urlparse(final_response.url)
+        query_params = parse_qs(parse_result.query)
+    except Exception as e:
+        # Fallback extraction from error/response
+        pattern = r"request_token=[A-Za-z0-9]+"
+        match = re.search(pattern, str(e) or final_response.text)
+        if match:
+            query_params = parse_qs(match.group(0))
+        else:
+            raise ValueError("Could not extract request_token")
+
+    if "request_token" not in query_params:
+        raise ValueError("Request token not found in response")
+
+    return query_params["request_token"][0]
 
 def render_kite_login(sidebar=True):
-    """Render Kite Connect login UI in Streamlit sidebar or main area.
-    
-    Returns (pipeline, is_connected) tuple.
-    """
+    """Render Kite Connect login UI with automated option."""
     import streamlit as st
 
     def _render_ui():
@@ -856,47 +910,62 @@ def render_kite_login(sidebar=True):
             st.success("✅ Kite Connected")
             return st.session_state.kite_pipeline, True
 
-        # Credential inputs
-        api_key = st.text_input("API Key", type="password", key="kite_api_key",
-                                value=os.environ.get("KITE_API_KEY", ""))
-        api_secret = st.text_input("API Secret", type="password", key="kite_api_secret",
-                                   value=os.environ.get("KITE_API_SECRET", ""))
+        # Toggle for login mode
+        login_mode = st.radio("Login Mode", ["Manual (OAuth)", "Automated (Credentials)"], index=0)
 
-        # Option 1: Direct access token (for already-authenticated sessions)
-        access_token = st.text_input("Access Token (if available)", type="password",
-                                     key="kite_access_token",
-                                     value=os.environ.get("KITE_ACCESS_TOKEN", ""))
+        # Common: API Key/Secret (from secrets or input)
+        api_key = st.text_input("API Key", value=st.secrets.get("KITE_API_KEY", ""), type="password")
+        api_secret = st.text_input("API Secret", value=st.secrets.get("KITE_API_SECRET", ""), type="password")
 
-        if access_token and api_key:
-            if st.button("Connect with Token", type="primary", key="kite_connect_token"):
-                pipeline = KiteDataPipeline(api_key, api_secret, access_token)
-                if pipeline.is_connected():
-                    pipeline.initialize()
-                    st.session_state.kite_pipeline = pipeline
-                    st.success("✅ Connected to Kite")
-                    st.rerun()
+        if login_mode == "Manual (OAuth)":
+            # Existing manual flow...
+            if api_key and api_secret:
+                session = KiteSession(api_key=api_key, api_secret=api_secret)
+                login_url = session.get_login_url()
+                st.markdown(f"[🔐 Login to Zerodha]({login_url})")
+                request_token = st.text_input("Paste Request Token", key="kite_request_token")
+                if request_token and st.button("Generate Session", key="kite_gen_session"):
+                    try:
+                        session.generate_session(request_token)
+                        pipeline = KiteDataPipeline(api_key, api_secret, session.access_token)
+                        pipeline.initialize()
+                        st.session_state.kite_pipeline = pipeline
+                        st.success("✅ Session generated!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Session failed: {e}")
+            st.caption("Enter credentials or use env vars.")
+
+        else:  # Automated Mode
+            # Inputs for automation (fallback to secrets)
+            username = st.text_input("Zerodha User ID", value=st.secrets.get("ZERODHA_USERNAME", ""))
+            password = st.text_input("Zerodha Password", type="password")
+            totp_key = st.text_input("TOTP Secret", type="password")
+            st.warning("⚠️ Entering credentials here is for testing only. For security, use Streamlit secrets or a secure backend.")
+
+            if st.button("Auto-Login & Generate Session", type="primary"):
+                if not all([api_key, api_secret, username, password, totp_key]):
+                    st.error("All fields required for auto-login.")
                 else:
-                    st.error("Invalid token. Please re-authenticate.")
-            return None, False
+                    try:
+                        credentials = {
+                            "api_key": api_key,
+                            "api_secret": api_secret,
+                            "username": username,
+                            "password": password,
+                            "totp_key": totp_key
+                        }
+                        request_token = get_request_token(credentials)
+                        session = KiteSession(api_key=api_key, api_secret=api_secret)
+                        session.generate_session(request_token)
+                        pipeline = KiteDataPipeline(api_key, api_secret, session.access_token)
+                        pipeline.initialize()
+                        st.session_state.kite_pipeline = pipeline
+                        st.success("✅ Auto-Login Successful! Session generated.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Auto-Login failed: {str(e)}")
 
-        # Option 2: OAuth flow
-        if api_key and api_secret:
-            session = KiteSession(api_key=api_key, api_secret=api_secret)
-            login_url = session.get_login_url()
-            st.markdown(f"[🔐 Login to Zerodha]({login_url})")
-            request_token = st.text_input("Paste Request Token", key="kite_request_token")
-            if request_token and st.button("Generate Session", key="kite_gen_session"):
-                try:
-                    session.generate_session(request_token)
-                    pipeline = KiteDataPipeline(api_key, api_secret, session.access_token)
-                    pipeline.initialize()
-                    st.session_state.kite_pipeline = pipeline
-                    st.success("✅ Session generated!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Session failed: {e}")
-
-        st.caption("Enter Kite API credentials or set KITE_API_KEY, KITE_API_SECRET, KITE_ACCESS_TOKEN env vars")
         return None, False
 
     if sidebar:
