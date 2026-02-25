@@ -842,15 +842,13 @@ def init_kite_session(api_key: str, api_secret: str, access_token: str = "") -> 
 
 
 def render_kite_login(sidebar=True):
-    """Render Kite Connect login UI in Streamlit sidebar.
+    """Render Kite Connect login UI in Streamlit sidebar or main area.
     
     Returns (pipeline, is_connected) tuple.
     """
     import streamlit as st
 
-    container = st.sidebar if sidebar else st
-
-    with container:
+    def _render_ui():
         st.markdown('<div class="stitle">🔗 Kite Connect</div>', unsafe_allow_html=True)
 
         # Check existing session
@@ -900,3 +898,9 @@ def render_kite_login(sidebar=True):
 
         st.caption("Enter Kite API credentials or set KITE_API_KEY, KITE_API_SECRET, KITE_ACCESS_TOKEN env vars")
         return None, False
+
+    if sidebar:
+        with st.sidebar:
+            return _render_ui()
+    else:
+        return _render_ui()
