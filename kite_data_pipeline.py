@@ -233,6 +233,12 @@ class FullQuote:
     asks: List[MarketDepthItem]
     ohlc: Dict[str, float]
     timestamp: datetime
+    # New Depth & Liquidity Metrics
+    total_buy_quantity: int = 0
+    total_sell_quantity: int = 0
+    average_price: float = 0.0
+    oi_day_high: int = 0
+    oi_day_low: int = 0
 
 class MarketData:
     """Handles all data fetching: Historical and Real-time Quotes."""
@@ -303,7 +309,12 @@ class MarketData:
                         bids=bids,
                         asks=asks,
                         ohlc=q.get('ohlc', {}),
-                        timestamp=datetime.fromisoformat(q['timestamp'].replace('Z', '+00:00')) if q.get('timestamp') else datetime.now()
+                        timestamp=datetime.fromisoformat(q['timestamp'].replace('Z', '+00:00')) if q.get('timestamp') else datetime.now(),
+                        total_buy_quantity=q.get('buy_quantity', 0),
+                        total_sell_quantity=q.get('sell_quantity', 0),
+                        average_price=q.get('average_price', 0.0),
+                        oi_day_high=q.get('oi_day_high', 0),
+                        oi_day_low=q.get('oi_day_low', 0)
                     )
             except Exception as e:
                 logger.error(f"Quote batch failed: {e}")
@@ -426,6 +437,13 @@ class OptionQuote:
     gamma: float = 0.0
     theta: float = 0.0
     vega: float = 0.0
+    # Liquidity & Depth Data
+    total_buy_qty: int = 0
+    total_sell_qty: int = 0
+    bid_ask_spread: float = 0.0
+    spread_pct: float = 0.0
+    liquidity_score: float = 0.0  # 0 to 100
+    is_liquid: bool = False
 
 @dataclass
 class OptionChain:
@@ -501,7 +519,9 @@ class OptionChainFetch:
                 bid_qty=bid_qty,
                 ask_qty=ask_qty,
                 volume=q.volume,
-                oi=q.oi
+                oi=q.oi,
+                total_buy_qty=q.total_buy_quantity,
+                total_sell_qty=q.total_sell_quantity
             )
             
             if details['instrument_type'] == 'CE':
@@ -513,8 +533,54 @@ class OptionChainFetch:
         chain = OptionChain(symbol, underlying_price, expiry, calls, puts, datetime.now())
         if underlying_price > 0:
             self._compute_greeks(chain)
+            self._compute_liquidity(chain)
             
         return chain
+
+    def _compute_liquidity(self, chain: OptionChain):
+        """Evaluate and score the liquidity of each strike based on Kite depth and volume."""
+        for opt in chain.calls + chain.puts:
+            # Calculate Spread
+            if opt.bid > 0 and opt.ask > 0:
+                opt.bid_ask_spread = round(opt.ask - opt.bid, 2)
+                mid_price = (opt.ask + opt.bid) / 2
+                opt.spread_pct = round(opt.bid_ask_spread / mid_price, 4) if mid_price > 0 else 0.0
+            else:
+                opt.bid_ask_spread = 999.0
+                opt.spread_pct = 9.99
+
+            # Liquidity Heuristics:
+            # High Volume, High OI, Tight Spread, High Total Bids/Asks = Highly Liquid
+            score = 0.0
+            
+            # 1. Spread component (max 40 pts) - < 2% spread is excellent
+            if 0 < opt.spread_pct <= 0.02: score += 40
+            elif opt.spread_pct <= 0.05: score += 25
+            elif opt.spread_pct <= 0.10: score += 10
+
+            # 2. Volume component (max 30 pts)
+            if opt.volume > 10000: score += 30
+            elif opt.volume > 1000: score += 20
+            elif opt.volume > 100: score += 10
+            
+            # 3. Open Interest component (max 15 pts)
+            if opt.oi > 10000: score += 15
+            elif opt.oi > 1000: score += 10
+            elif opt.oi > 100: score += 5
+            
+            # 4. Order Book Depth component (max 15 pts)
+            if opt.total_buy_qty > 1000 and opt.total_sell_qty > 1000: score += 15
+            elif opt.total_buy_qty > 100 and opt.total_sell_qty > 100: score += 7
+            
+            opt.liquidity_score = score
+            
+            # Binary viability flag for the engine to easily filter out junk/illiquid strikes
+            opt.is_liquid = (
+                opt.bid > 0 and 
+                opt.ask > 0 and 
+                opt.spread_pct <= 0.15 and 
+                (opt.volume > 50 or opt.oi > 100)
+            )
 
     def _compute_greeks(self, chain: OptionChain):
         """Compute IV and Greeks using precise live data."""
