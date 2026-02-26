@@ -737,6 +737,33 @@ class KiteDataPipeline:
 
 # ── Session Helpers ──
 
+def _sanitize_totp_key(raw_key: str) -> str:
+    """
+    Clean a TOTP secret for pyotp compatibility.
+    - Strip whitespace, dashes, and newlines
+    - Uppercase (base32 is A-Z, 2-7 only)
+    - Pad to multiple of 8 with '='
+    - Validate that only base32 chars remain
+    """
+    key = raw_key.strip().replace(" ", "").replace("-", "").replace("\n", "").upper()
+    # Remove any padding first, then re-pad correctly
+    key = key.rstrip("=")
+    pad = len(key) % 8
+    if pad:
+        key += "=" * (8 - pad)
+    # Validate base32 charset
+    import re as _re
+    clean = key.rstrip("=")
+    if not _re.fullmatch(r'[A-Z2-7]*', clean):
+        raise ValueError(
+            f"TOTP key contains invalid characters. "
+            f"Base32 only allows A-Z and 2-7. "
+            f"Check your KITE_TOTP_KEY in secrets — it should be the raw key from "
+            f"Zerodha's 'Can't scan? Copy key' during TOTP setup."
+        )
+    return key
+
+
 def get_request_token(credentials: dict) -> str:
     """
     Automated Kite Connect login flow:
@@ -769,8 +796,9 @@ def get_request_token(credentials: dict) -> str:
         raise ConnectionError(f"Kite login failed: {login_data.get('message', 'Unknown error')}")
     request_id = login_data["data"]["request_id"]
     
-    # Step 3: POST 2FA using pyotp
-    totp_value = pyotp.TOTP(credentials["totp_key"]).now()
+    # Step 3: POST 2FA using pyotp with sanitized TOTP key
+    clean_totp_key = _sanitize_totp_key(credentials["totp_key"])
+    totp_value = pyotp.TOTP(clean_totp_key).now()
     resp = session.post("https://kite.zerodha.com/api/twofa", data={
         "user_id": credentials["username"],
         "request_id": request_id,
@@ -818,7 +846,13 @@ def render_kite_login(sidebar=True):
             mode = st.radio("Login Method", ["Manual Token", "Auto-Login (TOTP)"])
             
             if mode == "Manual Token":
-                rt = st.text_input("Request Token")
+                if ak:
+                    login_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={ak}"
+                    st.markdown(
+                        f"**Step 1:** [Open Kite Login]({login_url}) → login → "
+                        f"copy `request_token` from the redirect URL"
+                    )
+                rt = st.text_input("Step 2: Paste Request Token")
                 if st.button("Connect"):
                     if not ak or not ask:
                         st.error("API Key and API Secret are required.")
