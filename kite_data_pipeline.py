@@ -737,8 +737,22 @@ class KiteDataPipeline:
 
 # ── Session Helpers ──
 
+def _pad_totp_secret(secret: str) -> str:
+    """Ensure TOTP secret has valid base32 padding (multiple of 8)."""
+    secret = secret.strip().replace(" ", "")
+    pad = len(secret) % 8
+    if pad:
+        secret += "=" * (8 - pad)
+    return secret
+
+
 def get_request_token(credentials: dict) -> str:
     """Automated login helper."""
+    # Validate inputs
+    for field in ("api_key", "username", "password", "totp_key"):
+        if not credentials.get(field, "").strip():
+            raise ValueError(f"Missing required credential: {field}")
+
     kite = KiteConnect(api_key=credentials["api_key"])
     session = requests.Session()
     login_url = kite.login_url()
@@ -747,17 +761,26 @@ def get_request_token(credentials: dict) -> str:
     resp = session.post("https://kite.zerodha.com/api/login", data={
         "user_id": credentials["username"], "password": credentials["password"]
     })
-    req_id = resp.json()["data"]["request_id"]
+    login_data = resp.json()
+    if login_data.get("status") != "success":
+        raise ConnectionError(f"Kite login failed: {login_data.get('message', 'Unknown error')}")
+    req_id = login_data["data"]["request_id"]
     
-    # 2. 2FA
+    # 2. 2FA — pad the TOTP secret for valid base32
+    totp_secret = _pad_totp_secret(credentials["totp_key"])
     resp = session.post("https://kite.zerodha.com/api/twofa", data={
         "user_id": credentials["username"], "request_id": req_id,
-        "twofa_value": otp.get_totp(credentials["totp_key"]), "twofa_type": "totp"
+        "twofa_value": otp.get_totp(totp_secret), "twofa_type": "totp"
     })
+    twofa_data = resp.json()
+    if twofa_data.get("status") != "success":
+        raise ConnectionError(f"Kite 2FA failed: {twofa_data.get('message', 'Check TOTP key')}")
     
     # 3. Redirect parse
     redir = session.get(login_url)
     q = parse_qs(urlparse(redir.url).query)
+    if "request_token" not in q:
+        raise ConnectionError("No request_token in redirect. Login may have failed or API key is incorrect.")
     return q["request_token"][0]
 
 def render_kite_login(sidebar=True):
@@ -779,24 +802,38 @@ def render_kite_login(sidebar=True):
             if mode == "Manual Token":
                 rt = st.text_input("Request Token")
                 if st.button("Connect"):
-                    ks = KiteSession(ak, ask)
-                    ks.generate_session(rt)
-                    kp = KiteDataPipeline(ak, ask, ks.access_token)
-                    kp.initialize()
-                    st.session_state.kite_pipeline = kp
-                    st.rerun()
+                    if not ak or not ask:
+                        st.error("API Key and API Secret are required.")
+                    elif not rt or len(rt.strip()) < 10:
+                        st.error("Request Token must be at least 10 characters. Complete the Kite login flow first to obtain it.")
+                    else:
+                        try:
+                            ks = KiteSession(ak, ask)
+                            ks.generate_session(rt.strip())
+                            kp = KiteDataPipeline(ak, ask, ks.access_token)
+                            kp.initialize()
+                            st.session_state.kite_pipeline = kp
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Connection failed: {e}")
             else:
                 uid = st.text_input("User ID")
                 pwd = st.text_input("Password", type="password")
                 totp = st.text_input("TOTP Key", type="password")
                 if st.button("Auto Connect"):
-                    rt = get_request_token({"api_key": ak, "username": uid, "password": pwd, "totp_key": totp})
-                    ks = KiteSession(ak, ask)
-                    ks.generate_session(rt)
-                    kp = KiteDataPipeline(ak, ask, ks.access_token)
-                    kp.initialize()
-                    st.session_state.kite_pipeline = kp
-                    st.rerun()
+                    if not all([ak, ask, uid, pwd, totp]):
+                        st.error("All fields are required for Auto-Login.")
+                    else:
+                        try:
+                            rt = get_request_token({"api_key": ak, "username": uid, "password": pwd, "totp_key": totp})
+                            ks = KiteSession(ak, ask)
+                            ks.generate_session(rt)
+                            kp = KiteDataPipeline(ak, ask, ks.access_token)
+                            kp.initialize()
+                            st.session_state.kite_pipeline = kp
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Auto-login failed: {e}")
         return None, False
 
     if sidebar:
