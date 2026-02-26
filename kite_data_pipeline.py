@@ -134,7 +134,7 @@ class KiteSession:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class InstrumentCache:
-    """Manages the 50MB+ instrument master file."""
+    """Manages the 50MB+ instrument master file with indexed lookups."""
 
     CACHE_FILE = "kite_instruments.csv"
     CACHE_TTL = 12 * 3600  # 12 hours
@@ -142,6 +142,22 @@ class InstrumentCache:
     def __init__(self, session: KiteSession):
         self.session = session
         self._instruments: Optional[pd.DataFrame] = None
+        # Fast lookup indices — built once on load
+        self._token_index: Dict[str, int] = {}       # "NSE:RELIANCE" → token
+        self._name_index: Dict[str, pd.DataFrame] = {}  # grouped by name for options
+
+    def _build_indices(self):
+        """Build O(1) lookup dicts from the DataFrame — called once after load."""
+        df = self._instruments
+        # Token index: exchange:tradingsymbol → instrument_token
+        self._token_index = {}
+        for _, row in df[['exchange', 'tradingsymbol', 'instrument_token']].iterrows():
+            key = f"{row['exchange']}:{row['tradingsymbol']}"
+            self._token_index[key] = int(row['instrument_token'])
+        
+        # Pre-group NFO-OPT by name for fast option chain lookups
+        nfo_opts = df[df['segment'] == 'NFO-OPT']
+        self._name_index = {name: group for name, group in nfo_opts.groupby('name')}
 
     def load(self, force_refresh: bool = False) -> pd.DataFrame:
         """Load instrument master (from cache or API)."""
@@ -154,6 +170,7 @@ class InstrumentCache:
             if (time.time() - mtime) < self.CACHE_TTL:
                 try:
                     self._instruments = pd.read_csv(self.CACHE_FILE)
+                    self._build_indices()
                     return self._instruments
                 except Exception:
                     pass
@@ -166,11 +183,11 @@ class InstrumentCache:
         from io import StringIO
         self._instruments = pd.read_csv(StringIO(resp.text))
         self._instruments.to_csv(self.CACHE_FILE, index=False)
+        self._build_indices()
         return self._instruments
 
     def get_fno_symbols(self) -> Tuple[List[str], str]:
         df = self.load()
-        # Filter for NFO Futures to get list of active underlying symbols
         fno = df[
             (df['segment'] == 'NFO-FUT') &
             (df['instrument_type'] == 'FUT')
@@ -187,26 +204,24 @@ class InstrumentCache:
         return dict(zip(fno['name'], fno['lot_size'].astype(int)))
 
     def get_instrument_token(self, symbol: str, exchange: str = "NSE") -> Optional[int]:
-        df = self.load()
-        match = df[
-            (df['tradingsymbol'] == symbol) &
-            (df['exchange'] == exchange)
-        ]
-        if len(match) > 0:
-            return int(match.iloc[0]['instrument_token'])
-        return None
+        """O(1) token lookup via pre-built index."""
+        self.load()  # ensure loaded
+        return self._token_index.get(f"{exchange}:{symbol}")
         
     def get_underlying_token(self, symbol: str) -> Optional[int]:
         """Get token for the underlying Spot (NSE/BSE)."""
         return self.get_instrument_token(symbol, "NSE")
 
     def get_option_instruments(self, symbol: str, expiry: Optional[date] = None) -> pd.DataFrame:
-        df = self.load()
-        mask = (df['segment'] == 'NFO-OPT') & (df['name'] == symbol)
+        """Fast option instrument lookup via pre-grouped index."""
+        self.load()  # ensure loaded
+        opts = self._name_index.get(symbol, pd.DataFrame())
+        if opts.empty:
+            return opts
+        opts = opts.copy()
         if expiry:
             expiry_str = expiry.strftime('%Y-%m-%d')
-            mask &= (df['expiry'] == expiry_str)
-        opts = df[mask].copy()
+            opts = opts[opts['expiry'] == expiry_str]
         if len(opts) > 0:
             opts['expiry'] = pd.to_datetime(opts['expiry'])
             opts = opts.sort_values(['expiry', 'strike', 'instrument_type'])
@@ -247,13 +262,20 @@ class MarketData:
         self.session = session
         self.instruments = instruments
         self._last_req_time = 0
+        self._req_lock = __import__('threading').Lock()
 
-    def _rate_limit(self, reqs_per_sec=3):
-        now = time.time()
-        elapsed = now - self._last_req_time
-        if elapsed < (1.0 / reqs_per_sec):
-            time.sleep((1.0 / reqs_per_sec) - elapsed)
-        self._last_req_time = time.time()
+    def _rate_limit(self, reqs_per_sec=8):
+        """
+        Kite allows 10 req/sec. Use 8 to stay safe.
+        Thread-safe rate limiter.
+        """
+        with self._req_lock:
+            now = time.time()
+            min_interval = 1.0 / reqs_per_sec
+            elapsed = now - self._last_req_time
+            if elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
+            self._last_req_time = time.time()
 
     def fetch_ohlcv_historical(self, symbol: str, days_back: int = 400) -> Optional[pd.DataFrame]:
         """Fetch historical candles."""
@@ -281,11 +303,34 @@ class MarketData:
         df = df.set_index('Date').sort_index()
         return df
 
+    def fetch_ohlcv_batch(self, symbols: List[str], days_back: int = 400, max_workers: int = 5) -> Dict[str, pd.DataFrame]:
+        """
+        Fetch historical OHLCV for multiple symbols concurrently.
+        Uses ThreadPoolExecutor with rate-limiting to stay within Kite's 10 req/sec.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        results = {}
+        
+        def _fetch_one(sym):
+            df = self.fetch_ohlcv_historical(sym, days_back)
+            return sym, df
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_fetch_one, s): s for s in symbols}
+            for fut in as_completed(futures):
+                try:
+                    sym, df = fut.result()
+                    if df is not None and not df.empty:
+                        results[sym] = df
+                except Exception as e:
+                    logger.error(f"Batch fetch error for {futures[fut]}: {e}")
+        
+        return results
+
     def fetch_quotes(self, instrument_tokens: List[int]) -> Dict[int, FullQuote]:
         """Fetch full Mode:Full quotes including depth for multiple tokens."""
         if not instrument_tokens: return {}
         
-        # Batching logic handled by caller or simple split here
         results = {}
         chunk_size = 500
         
@@ -320,6 +365,28 @@ class MarketData:
                 logger.error(f"Quote batch failed: {e}")
                 
         return results
+
+    def fetch_quotes_by_symbols(self, symbols: List[str], exchange: str = "NSE") -> Dict[str, FullQuote]:
+        """
+        Batch-fetch live quotes for multiple symbols in minimal API calls.
+        Returns {symbol: FullQuote} mapping.
+        """
+        # Resolve all tokens at once using O(1) lookups
+        sym_token_map = {}
+        for sym in symbols:
+            token = self.instruments.get_instrument_token(sym, exchange)
+            if token:
+                sym_token_map[sym] = token
+        
+        if not sym_token_map:
+            return {}
+        
+        # Single batched fetch (handles chunking internally)
+        token_quotes = self.fetch_quotes(list(sym_token_map.values()))
+        
+        # Map back to symbols
+        token_to_sym = {v: k for k, v in sym_token_map.items()}
+        return {token_to_sym[t]: q for t, q in token_quotes.items() if t in token_to_sym}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -583,53 +650,70 @@ class OptionChainFetch:
             )
 
     def _compute_greeks(self, chain: OptionChain):
-        """Compute IV and Greeks using precise live data."""
-        # Simple Newton-Raphson implementation for IV
-        # BSM for Greeks
+        """Compute IV and Greeks using vectorized numpy — no per-option loops."""
         from scipy.stats import norm
         S = chain.underlying_price
         T = max((chain.expiry - date.today()).days / 365.0, 1/365)
-        r = 0.07 # Risk free rate
+        r = 0.07
+        sqrtT = np.sqrt(T)
 
-        def bsm_price(sigma, K, otype):
-            d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
-            d2 = d1 - sigma*np.sqrt(T)
-            if otype == 'CE': return S*norm.cdf(d1) - K*np.exp(-r*T)*norm.cdf(d2)
-            return K*np.exp(-r*T)*norm.cdf(-d2) - S*norm.cdf(-d1)
-
-        def implied_vol(price, K, otype):
-            if price < 0.05: return 0
-            low, high = 0.01, 5.0
+        def _vectorized_iv_greeks(options: list, otype: str):
+            """Compute IV + Greeks for all options at once using vectorized bisection."""
+            if not options:
+                return
+            
+            strikes = np.array([o.strike for o in options])
+            mids = np.array([
+                (o.bid + o.ask) / 2 if o.bid > 0 and o.ask > 0 else o.last_price
+                for o in options
+            ])
+            n = len(options)
+            
+            # Vectorized bisection for IV (20 iterations)
+            low = np.full(n, 0.01)
+            high = np.full(n, 5.0)
+            
             for _ in range(20):
-                mid = (low + high) / 2
-                p = bsm_price(mid, K, otype)
-                if abs(p - price) < 0.01: return mid
-                if p < price: low = mid
-                else: high = mid
-            return mid
+                mid_vol = (low + high) / 2
+                d1 = (np.log(S / strikes) + (r + 0.5 * mid_vol**2) * T) / (mid_vol * sqrtT)
+                d2 = d1 - mid_vol * sqrtT
+                if otype == 'CE':
+                    prices = S * norm.cdf(d1) - strikes * np.exp(-r * T) * norm.cdf(d2)
+                else:
+                    prices = strikes * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+                
+                too_low = prices < mids
+                low = np.where(too_low, mid_vol, low)
+                high = np.where(~too_low, mid_vol, high)
+            
+            ivs = (low + high) / 2
+            ivs = np.where(mids < 0.05, 0.0, ivs)
+            
+            # Vectorized Greeks
+            d1 = (np.log(S / strikes) + (r + 0.5 * ivs**2) * T) / (ivs * sqrtT + 1e-10)
+            d2 = d1 - ivs * sqrtT
+            
+            if otype == 'CE':
+                deltas = norm.cdf(d1)
+                thetas = (-S * norm.pdf(d1) * ivs / (2 * sqrtT) - r * strikes * np.exp(-r * T) * norm.cdf(d2)) / 365
+            else:
+                deltas = norm.cdf(d1) - 1
+                thetas = (-S * norm.pdf(d1) * ivs / (2 * sqrtT) - r * strikes * np.exp(-r * T) * norm.cdf(-d2)) / 365
+            
+            gammas = norm.pdf(d1) / (S * ivs * sqrtT + 1e-10)
+            vegas = S * sqrtT * norm.pdf(d1) / 100
+            
+            # Assign back to option objects
+            for i, opt in enumerate(options):
+                opt.iv = float(ivs[i])
+                if opt.iv > 0:
+                    opt.delta = float(deltas[i])
+                    opt.gamma = float(gammas[i])
+                    opt.theta = float(thetas[i])
+                    opt.vega = float(vegas[i])
 
-        def greeks(sigma, K, otype):
-            d1 = (np.log(S/K) + (r + 0.5*sigma**2)*T) / (sigma*np.sqrt(T))
-            d2 = d1 - sigma*np.sqrt(T)
-            delta = norm.cdf(d1) if otype=='CE' else norm.cdf(d1)-1
-            gamma = norm.pdf(d1)/(S*sigma*np.sqrt(T))
-            theta = (-S*norm.pdf(d1)*sigma/(2*np.sqrt(T)) - r*K*np.exp(-r*T)*norm.cdf(d2 if otype=='CE' else -d2))/365
-            vega = S*np.sqrt(T)*norm.pdf(d1)/100
-            return delta, gamma, theta, vega
-
-        # Process Calls
-        for c in chain.calls:
-            mid = (c.bid + c.ask)/2 if c.bid>0 and c.ask>0 else c.last_price
-            c.iv = implied_vol(mid, c.strike, 'CE')
-            if c.iv > 0:
-                c.delta, c.gamma, c.theta, c.vega = greeks(c.iv, c.strike, 'CE')
-        
-        # Process Puts
-        for p in chain.puts:
-            mid = (p.bid + p.ask)/2 if p.bid>0 and p.ask>0 else p.last_price
-            p.iv = implied_vol(mid, p.strike, 'PE')
-            if p.iv > 0:
-                p.delta, p.gamma, p.theta, p.vega = greeks(p.iv, p.strike, 'PE')
+        _vectorized_iv_greeks(chain.calls, 'CE')
+        _vectorized_iv_greeks(chain.puts, 'PE')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -669,53 +753,171 @@ class KiteDataPipeline:
 
     def fetch_all_data(self, symbols: List[str], days_back: int = 400) -> Tuple[pd.DataFrame, str]:
         """
-        Main analytics entry point.
-        Fetches Historical Data + Live Quote snapshots to build the analytics DataFrame.
+        Main analytics entry point — optimized for speed.
+        Produces the SAME DataFrame schema as app.py's yfinance fetch_all_data.
+        1. Concurrent historical fetches via ThreadPoolExecutor
+        2. Single batched live quote call for all symbols
+        3. Full analytics computation (RV, GARCH, RSI, ADX, Kalman, CUSUM, PCR)
         """
-        results = []
+        import time as _time
+        t0 = _time.time()
         
-        # 1. Fetch History in Batch (Rate Limiting handled internally)
-        for sym in symbols:
-            df = self.market.fetch_ohlcv_historical(sym, days_back)
-            if df is None or df.empty: continue
-            
-            # --- Standard Vaaydo Analytics Calculation (Local) ---
-            # (Keeping local calculation for GARCH/RV as API doesn't provide these derived metrics)
+        # 1. Fetch all history concurrently (5 threads, rate-limited internally)
+        history = self.market.fetch_ohlcv_batch(symbols, days_back, max_workers=5)
+        t1 = _time.time()
+        logger.info(f"Historical fetch: {len(history)}/{len(symbols)} symbols in {t1-t0:.1f}s")
+        
+        if not history:
+            return pd.DataFrame(), "No historical data fetched"
+        
+        # 2. Single batched live quote fetch for ALL symbols at once
+        live_quotes = self.market.fetch_quotes_by_symbols(list(history.keys()))
+        t2 = _time.time()
+        logger.info(f"Live quotes: {len(live_quotes)} symbols in {t2-t1:.1f}s")
+        
+        # 3. Compute full analytics per symbol (matching yfinance path schema)
+        results = []
+        for sym, df in history.items():
             try:
-                # Basic
-                price = float(df['Close'].iloc[-1])
-                # ... [Copying minimal analytics logic for brevity, assuming similar to original] ...
-                # In production, this section replicates the `fetch_all_data` logic from app.py
-                # but uses the `df` we just fetched from Kite.
+                if len(df) < 60:
+                    continue
                 
-                # Fetch LIVE quote to get today's real-time PCR/Volume
-                token = self.instruments.get_instrument_token(sym)
-                live_q = self.market.fetch_quotes([token]).get(token)
+                O, H, L, Cl, V = df['Open'], df['High'], df['Low'], df['Close'], df['Volume']
+                price = float(Cl.iloc[-1])
+                lr = np.log(Cl / Cl.shift(1)).dropna()
                 
-                vol_curr = live_q.volume if live_q else df['Volume'].iloc[-1]
+                # ── Multi-Estimator Volatility ──
+                rv_c2c = lr.rolling(20).std() * np.sqrt(252)
+                hl = np.log(H / L)
+                rv_park = np.sqrt(hl.pow(2).rolling(20).mean() / (4 * np.log(2))) * np.sqrt(252)
+                u = np.log(H / O); d = np.log(L / O); c = np.log(Cl / O)
+                gk_var = (0.5 * u.pow(2) - (2*np.log(2)-1) * c.pow(2) + 0.5 * d.pow(2)).rolling(20).mean()
+                rv_gk = np.sqrt(gk_var.clip(lower=0)) * np.sqrt(252)
+                o_c_prev = np.log(O / Cl.shift(1)); c_o = np.log(Cl / O)
+                yz_o = o_c_prev.rolling(20).var(); yz_c = c_o.rolling(20).var()
+                k = 0.34 / (1.34 + 21/19)
+                yz_var = yz_o + k * yz_c + (1 - k) * gk_var.clip(lower=0)
+                rv_yz = np.sqrt(yz_var.clip(lower=0)) * np.sqrt(252)
                 
-                # ... Populate result dict ...
-                res = {
-                    'Instrument': sym,
-                    'price': price,
-                    'volume': vol_curr,
+                w = {'c2c': 0.15, 'park': 0.20, 'gk': 0.25, 'yz': 0.40}
+                rv_composite = (w['c2c'] * rv_c2c.fillna(0) + w['park'] * rv_park.fillna(0) +
+                               w['gk'] * rv_gk.fillna(0) + w['yz'] * rv_yz.fillna(0))
+                current_rv = float(rv_composite.iloc[-1]) if not np.isnan(rv_composite.iloc[-1]) else 0.25
+                current_rv = max(current_rv, 0.05)
+                
+                # ── IV Estimation with VRP ──
+                rv_history = rv_composite.dropna().values
+                lookback = min(252, len(rv_history))
+                ivp = float(np.sum(rv_history[-lookback:] <= current_rv) / lookback * 100) if lookback > 20 else 50.0
+                
+                if ivp > 70: vrp_factor = 1.08
+                elif ivp < 30: vrp_factor = 1.18
+                else: vrp_factor = 1.12
+                atmiv = current_rv * vrp_factor * 100
+                
+                # ── GARCH(1,1) ──
+                omega, alpha, beta = 0.000005, 0.10, 0.85
+                lr_vals = lr.values[-60:] if len(lr) >= 60 else lr.values
+                var_t = current_rv**2 / 252
+                for ret in lr_vals:
+                    var_t = max(omega + alpha * ret**2 + beta * var_t, 1e-10)
+                garch_vol = np.sqrt(var_t * 252)
+                persistence = alpha + beta
+                half_life = -np.log(2) / np.log(max(persistence, 0.001)) if persistence < 1 else 999
+                
+                # ── Technical Analysis ──
+                delta_c = Cl.diff()
+                gain = delta_c.where(delta_c > 0, 0).rolling(14).mean()
+                loss = (-delta_c.where(delta_c < 0, 0)).rolling(14).mean()
+                rs = gain / loss.replace(0, np.nan)
+                rsi = 100 - (100 / (1 + rs))
+                rsi_val = float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else 50.0
+                
+                # ADX
+                plus_dm = H.diff().clip(lower=0)
+                minus_dm = (-L.diff()).clip(lower=0)
+                plus_dm = plus_dm.where(plus_dm > minus_dm, 0)
+                minus_dm = minus_dm.where(minus_dm > plus_dm, 0)
+                true_range = pd.concat([H-L, (H-Cl.shift(1)).abs(), (L-Cl.shift(1)).abs()], axis=1).max(axis=1)
+                atr14 = true_range.rolling(14).mean()
+                plus_di = 100 * plus_dm.rolling(14).mean() / atr14.replace(0, np.nan)
+                minus_di = 100 * minus_dm.rolling(14).mean() / atr14.replace(0, np.nan)
+                dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+                adx_val = float(dx.rolling(14).mean().iloc[-1]) if len(dx) >= 28 else 20.0
+                adx_val = adx_val if not np.isnan(adx_val) else 20.0
+                
+                atr_val = float(atr14.iloc[-1]) if not np.isnan(atr14.iloc[-1]) else price * 0.02
+                ma20 = float(Cl.rolling(20).mean().iloc[-1]) if len(Cl) >= 20 else price
+                ma50 = float(Cl.rolling(50).mean().iloc[-1]) if len(Cl) >= 50 else price
+                ma200 = float(Cl.rolling(200).mean().iloc[-1]) if len(Cl) >= 200 else price
+                
+                # Kalman Filter
+                kalman_price = price
+                kalman_var = atr_val**2
+                R_noise = (price * 0.01)**2
+                Q_proc = (price * 0.002)**2
+                for p_val in Cl.values[-20:]:
+                    if np.isnan(p_val): continue
+                    pred_var = kalman_var + Q_proc
+                    K_gain = pred_var / (pred_var + R_noise)
+                    kalman_price = kalman_price + K_gain * (p_val - kalman_price)
+                    kalman_var = (1 - K_gain) * pred_var
+                kalman_trend = (price - kalman_price) / max(atr_val, 0.01)
+                
+                # Use live quote volume if available, else last bar
+                live_q = live_quotes.get(sym)
+                vol_curr = live_q.volume if live_q else float(V.iloc[-1]) if not np.isnan(V.iloc[-1]) else 0
+                vol20 = float(V.rolling(20).mean().iloc[-1]) if len(V) >= 20 else max(vol_curr, 1)
+                
+                # PCR (volume-based proxy)
+                up_v = V.where(Cl > Cl.shift(1), 0).rolling(20).sum()
+                dn_v = V.where(Cl < Cl.shift(1), 0).rolling(20).sum()
+                pcr = float(dn_v.iloc[-1] / max(up_v.iloc[-1], 1)) if len(up_v) >= 20 else 1.0
+                pcr = min(max(pcr, 0.2), 3.0)
+                pct_change = float(Cl.pct_change().iloc[-1] * 100) if len(Cl) >= 2 else 0.0
+                
+                # CUSUM
+                cusum_pos, cusum_neg, cusum_alert = 0.0, 0.0, False
+                recent_lr = lr.values[-30:] if len(lr) >= 30 else lr.values
+                mu_lr = np.mean(recent_lr); sd_lr = max(np.std(recent_lr), 1e-6)
+                for r_val in recent_lr[-10:]:
+                    z = (r_val - mu_lr) / sd_lr
+                    cusum_pos = max(0, cusum_pos + z - 0.5)
+                    cusum_neg = max(0, cusum_neg - z - 0.5)
+                    if cusum_pos > 4.0 or cusum_neg > 4.0:
+                        cusum_alert = True; cusum_pos = cusum_neg = 0
+                
+                def safe_rv(series):
+                    v = series.iloc[-1] if len(series) > 0 else np.nan
+                    return round(float(v) * 100, 2) if not np.isnan(v) else 0.0
+                
+                results.append({
+                    'Instrument': sym, 'price': round(price, 2),
+                    'ATMIV': round(atmiv, 2), 'IVPercentile': round(ivp, 1),
+                    'RV_Composite': round(current_rv * 100, 2),
+                    'GARCH_Vol': round(garch_vol * 100, 2),
+                    'VRP_Factor': vrp_factor,
+                    'GARCH_Persistence': round(persistence, 3),
+                    'GARCH_HalfLife': round(half_life, 1),
+                    'PCR': round(pcr, 3), 'volume': vol_curr, 'vol20': vol20,
+                    'rsi_daily': round(rsi_val, 2), 'atr_daily': round(atr_val, 2),
+                    'adx': round(adx_val, 1), 'kalman_trend': round(kalman_trend, 3),
+                    'ma20_daily': round(ma20, 2), 'ma50_daily': round(ma50, 2),
+                    'ma200_daily': round(ma200, 2), '% change': round(pct_change, 2),
+                    'CUSUM_Alert': cusum_alert,
                     'lot_size': self.get_lot_size(sym),
-                    # Fill other metrics (IVP, GARCH) using local math on `df`
-                    'ATMIV': 20.0, # Placeholder if not computing
-                    'IVPercentile': 50.0 
-                }
-                
-                # Recalculate robust analytics using the data we have
-                # (Logic from original file should be preserved here or imported)
-                
-                results.append(res)
-                
+                    'RV_C2C': safe_rv(rv_c2c), 'RV_Parkinson': safe_rv(rv_park),
+                    'RV_GK': safe_rv(rv_gk), 'RV_YZ': safe_rv(rv_yz),
+                })
             except Exception as e:
                 logger.error(f"Analytics calc failed for {sym}: {e}")
+                continue
 
-        # Note: For full integration, paste the analytics logic from original fetch_all_data here
-        # For now, returning structure.
-        return pd.DataFrame(results), f"✓ Processed {len(results)} symbols via Kite"
+        t3 = _time.time()
+        if not results:
+            return pd.DataFrame(), "No valid data extracted"
+        logger.info(f"Total pipeline: {len(results)} symbols in {t3-t0:.1f}s")
+        return pd.DataFrame(results), f"✓ Analytics for {len(results)} symbols via Kite ({t3-t0:.1f}s)"
 
     # ── Option Chain & Execution Support ──
 

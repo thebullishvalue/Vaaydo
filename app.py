@@ -47,6 +47,7 @@ from enum import Enum
 from adaptive_engine import AdaptiveEngine, STRATEGY_STRUCTURE, AdaptiveGating, FuzzyRegime, SignalSpace
 from datetime import datetime, timedelta, date
 import requests
+import time
 import warnings
 # v4.1: Kite Connect data pipeline (replaces yfinance)
 try:
@@ -1639,6 +1640,7 @@ def main():
             st.session_state.analysis_run = True
             st.session_state.last_expiry = str(expiry_date)
             st.cache_data.clear()
+            st.session_state.pop('_kite_data_cache', None)  # Clear Kite cache too
             st.rerun()
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
@@ -1691,13 +1693,28 @@ def main():
     # ── DATA FETCH ──
     _use_kite = st.session_state.get('use_kite', False)
     if _use_kite and 'kite_pipeline' in st.session_state:
-        # v4.1: Kite Connect data pipeline
+        # v4.1: Kite Connect data pipeline — with TTL cache via session state
         kpipe = st.session_state.kite_pipeline
-        with st.spinner("Fetching F&O universe from Kite Connect..."):
-            symbols, sym_status = kpipe.get_fno_symbols()
-        with st.spinner(f"Downloading & computing analytics for {len(symbols)} securities via Kite..."):
-            df, data_status = kpipe.fetch_all_data(symbols)
-        _data_source_label = "Kite Connect"
+        _kite_cache = st.session_state.get('_kite_data_cache', {})
+        _cache_age = time.time() - _kite_cache.get('ts', 0) if _kite_cache else 999
+        
+        if _cache_age < 300 and not _kite_cache.get('df', pd.DataFrame()).empty:
+            # Use cached data (< 5 min old)
+            df, data_status = _kite_cache['df'], _kite_cache['status']
+            symbols, sym_status = _kite_cache['symbols'], _kite_cache['sym_status']
+            _data_source_label = "Kite Connect (cached)"
+        else:
+            with st.spinner("Fetching F&O universe from Kite Connect..."):
+                symbols, sym_status = kpipe.get_fno_symbols()
+            with st.spinner(f"Downloading & computing analytics for {len(symbols)} securities via Kite..."):
+                df, data_status = kpipe.fetch_all_data(symbols)
+            # Cache result
+            st.session_state['_kite_data_cache'] = {
+                'df': df, 'status': data_status,
+                'symbols': symbols, 'sym_status': sym_status,
+                'ts': time.time()
+            }
+            _data_source_label = "Kite Connect"
     else:
         # Fallback: yfinance
         with st.spinner("Fetching F&O universe..."):
