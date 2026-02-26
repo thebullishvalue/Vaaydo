@@ -31,7 +31,7 @@ import logging
 import re
 from urllib.parse import urlparse, parse_qs
 from kiteconnect import KiteConnect
-import onetimepass as otp
+import pyotp
 
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
@@ -737,51 +737,61 @@ class KiteDataPipeline:
 
 # ── Session Helpers ──
 
-def _pad_totp_secret(secret: str) -> str:
-    """Ensure TOTP secret has valid base32 padding (multiple of 8)."""
-    secret = secret.strip().replace(" ", "")
-    pad = len(secret) % 8
-    if pad:
-        secret += "=" * (8 - pad)
-    return secret
-
-
 def get_request_token(credentials: dict) -> str:
-    """Automated login helper."""
-    # Validate inputs
+    """
+    Automated Kite Connect login flow:
+      1. GET login URL → establish session cookies
+      2. POST /api/login → get request_id
+      3. POST /api/twofa with pyotp TOTP → complete 2FA
+      4. GET login URL + &skip_session=true → follow redirects → parse request_token
+      5. Return request_token for session generation
+    
+    Ref: https://kite.trade/docs/connect/v3/user/
+    """
     for field in ("api_key", "username", "password", "totp_key"):
         if not credentials.get(field, "").strip():
             raise ValueError(f"Missing required credential: {field}")
 
-    kite = KiteConnect(api_key=credentials["api_key"])
+    api_key = credentials["api_key"]
     session = requests.Session()
-    login_url = kite.login_url()
     
-    # 1. Login
+    # Step 1: GET the Kite login page to establish session cookies
+    login_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={api_key}"
+    session.get(url=login_url)
+    
+    # Step 2: POST login credentials
     resp = session.post("https://kite.zerodha.com/api/login", data={
-        "user_id": credentials["username"], "password": credentials["password"]
+        "user_id": credentials["username"],
+        "password": credentials["password"]
     })
     login_data = resp.json()
     if login_data.get("status") != "success":
         raise ConnectionError(f"Kite login failed: {login_data.get('message', 'Unknown error')}")
-    req_id = login_data["data"]["request_id"]
+    request_id = login_data["data"]["request_id"]
     
-    # 2. 2FA — pad the TOTP secret for valid base32
-    totp_secret = _pad_totp_secret(credentials["totp_key"])
+    # Step 3: POST 2FA using pyotp
+    totp_value = pyotp.TOTP(credentials["totp_key"]).now()
     resp = session.post("https://kite.zerodha.com/api/twofa", data={
-        "user_id": credentials["username"], "request_id": req_id,
-        "twofa_value": otp.get_totp(totp_secret), "twofa_type": "totp"
+        "user_id": credentials["username"],
+        "request_id": request_id,
+        "twofa_value": totp_value,
+        "twofa_type": "totp"
     })
     twofa_data = resp.json()
     if twofa_data.get("status") != "success":
         raise ConnectionError(f"Kite 2FA failed: {twofa_data.get('message', 'Check TOTP key')}")
     
-    # 3. Redirect parse
-    redir = session.get(login_url)
-    q = parse_qs(urlparse(redir.url).query)
-    if "request_token" not in q:
-        raise ConnectionError("No request_token in redirect. Login may have failed or API key is incorrect.")
-    return q["request_token"][0]
+    # Step 4: GET login URL with skip_session → redirects to registered URL with request_token
+    redirect_url = login_url + "&skip_session=true"
+    resp = session.get(url=redirect_url, allow_redirects=True)
+    parsed = parse_qs(urlparse(resp.url).query)
+    if "request_token" not in parsed:
+        raise ConnectionError(
+            f"No request_token in redirect URL. "
+            f"Check that your redirect URL is configured in the Kite developer console. "
+            f"Got: {resp.url[:120]}"
+        )
+    return parsed["request_token"][0]
 
 def render_kite_login(sidebar=True):
     import streamlit as st
@@ -825,9 +835,19 @@ def render_kite_login(sidebar=True):
                         except Exception as e:
                             st.error(f"Connection failed: {e}")
             else:
-                uid = st.text_input("User ID")
-                pwd = st.text_input("Password", type="password")
-                totp = st.text_input("TOTP Key", type="password")
+                # Pull auto-login creds from secrets if available
+                _uid_secret = st.secrets.get("KITE_USER_ID", "")
+                _pwd_secret = st.secrets.get("KITE_PASSWORD", "")
+                _totp_secret = st.secrets.get("KITE_TOTP_KEY", "")
+                
+                if _uid_secret and _pwd_secret and _totp_secret:
+                    uid, pwd, totp = _uid_secret, _pwd_secret, _totp_secret
+                    st.success("🔑 Login credentials loaded from secrets")
+                else:
+                    uid = st.text_input("User ID", value=_uid_secret)
+                    pwd = st.text_input("Password", type="password", value=_pwd_secret)
+                    totp = st.text_input("TOTP Key", type="password", value=_totp_secret)
+                
                 if st.button("Auto Connect"):
                     if not all([ak, ask, uid, pwd, totp]):
                         st.error("All fields are required for Auto-Login.")
