@@ -794,8 +794,16 @@ def render_kite_login(sidebar=True):
             return st.session_state.kite_pipeline, True
 
         with st.expander("Credentials", expanded=True):
-            ak = st.text_input("API Key", type="password")
-            ask = st.text_input("API Secret", type="password")
+            # Pull from Streamlit secrets if available, otherwise show text inputs
+            _ak_secret = st.secrets.get("KITE_API_KEY", "")
+            _ask_secret = st.secrets.get("KITE_API_SECRET", "")
+            
+            if _ak_secret and _ask_secret:
+                ak, ask = _ak_secret, _ask_secret
+                st.success("🔑 API credentials loaded from secrets")
+            else:
+                ak = st.text_input("API Key", type="password")
+                ask = st.text_input("API Secret", type="password")
             
             mode = st.radio("Login Method", ["Manual Token", "Auto-Login (TOTP)"])
             
