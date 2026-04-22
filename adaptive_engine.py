@@ -22,12 +22,241 @@ Sections:
 """
 
 import numpy as np
+import math
 from scipy import stats as sp_stats
 from scipy.stats import norm, beta as beta_dist
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Optional
+from numba import njit, prange
 import warnings
 warnings.filterwarnings('ignore')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# §0  HIGH PERFORMANCE COMPUTE CORE (Numba)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@njit(cache=True)
+def n_cdf(x: float) -> float:
+    """Fast Numba-compatible standard normal CDF."""
+    return 0.5 * (1.0 + math.erf(x / 1.4142135623730951))
+
+@njit(cache=True)
+def n_pdf(x: float) -> float:
+    """Fast Numba-compatible standard normal PDF."""
+    return math.exp(-0.5 * x**2) / 2.5066282746310002
+
+@njit(cache=True)
+def bsm_price_numba(S: float, K: float, T: float, r: float, sigma: float, is_call: bool = True):
+    """JIT-optimized BSM pricing."""
+    if T <= 1e-6:
+        return max(S - K, 0.0) if is_call else max(K - S, 0.0)
+    if sigma <= 1e-6:
+        return max(S - K * math.exp(-r * T), 0.0) if is_call else max(K * math.exp(-r * T) - S, 0.0)
+        
+    sT = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / sT
+    d2 = d1 - sT
+    
+    if is_call:
+        return S * n_cdf(d1) - K * math.exp(-r * T) * n_cdf(d2)
+    else:
+        return K * math.exp(-r * T) * n_cdf(-d2) - S * n_cdf(-d1)
+
+@njit(cache=True)
+def bsm_greeks_numba(S: float, K: float, T: float, r: float, sigma: float, is_call: bool = True):
+    """JIT-optimized BSM Greeks calculation with Higher-Order Sensitivities."""
+    if T <= 1e-6 or sigma <= 1e-6:
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0  # d, g, t, v, vn, vg, ch, sp
+    
+    sT = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma**2) * T) / sT
+    d2 = d1 - sT
+    
+    nd1 = n_pdf(d1)
+    gamma = nd1 / (S * sT)
+    vega = S * math.sqrt(T) * nd1 / 100
+    
+    # Higher order
+    vanna = -nd1 * d2 / sigma
+    volga = vega * d1 * d2 / sigma
+    
+    if is_call:
+        delta = n_cdf(d1)
+        theta = (-(S * nd1 * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * n_cdf(d2)) / 365
+        charm = (-nd1 * (r / (sigma * math.sqrt(T)) - d2 / (2 * T))) / 365
+    else:
+        delta = n_cdf(d1) - 1
+        theta = (-(S * nd1 * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * n_cdf(-d2)) / 365
+        charm = (-nd1 * (r / (sigma * math.sqrt(T)) - d2 / (2 * T))) / 365 # Approx
+        
+    speed = -gamma / S * (d1/sT + 1)
+        
+    return delta, gamma, theta, vega, vanna, volga, charm, speed
+
+@njit(parallel=True, cache=True)
+def generate_terminal_prices(S: float, sigma: float, T: float, n: int = 5000):
+    """Vectorized terminal price generation with antithetic variates."""
+    if T <= 0 or sigma <= 0:
+        return np.full(2 * n, S)
+    
+    steps = 1
+    dt = T / steps
+    drift = (0.07 - 0.5 * sigma**2) * dt
+    vol = sigma * math.sqrt(dt)
+    
+    terminal = np.empty(2 * n)
+    z = np.random.standard_normal(n)
+    
+    for i in prange(n):
+        ret = drift + vol * z[i]
+        terminal[i] = S * math.exp(ret)
+        terminal[i + n] = S * math.exp(drift - vol * z[i])
+        
+    return terminal
+
+@njit(parallel=True, cache=True)
+def generate_paths_numba(S: float, sigma: float, T: float, n: int = 100, steps: int = 30):
+    """Generate multiple price paths for visualization."""
+    dt = T / steps
+    drift = (0.07 - 0.5 * sigma**2) * dt
+    vol = sigma * math.sqrt(dt)
+    
+    paths = np.empty((n, steps + 1))
+    paths[:, 0] = S
+    
+    for i in prange(n):
+        for j in range(1, steps + 1):
+            paths[i, j] = paths[i, j-1] * math.exp(drift + vol * np.random.standard_normal())
+            
+    return paths
+
+@njit(parallel=True, cache=True)
+def compute_strategy_pnl_numba(terminal: np.ndarray, strikes: np.ndarray, 
+                               prems: np.ndarray, types: np.ndarray, qtys: np.ndarray):
+    """O(N) vectorized strategy P&L across all terminal prices."""
+    n_sims = len(terminal)
+    n_legs = len(strikes)
+    total_pnl = np.zeros(n_sims)
+    
+    for j in range(n_legs):
+        K = strikes[j]
+        p = prems[j]
+        t = types[j]  # 0: Sell Call, 1: Buy Call, 2: Sell Put, 3: Buy Put
+        m = qtys[j]
+        
+        for i in prange(n_sims):
+            S_t = terminal[i]
+            pnl = 0.0
+            if t == 0:    # Sell Call
+                pnl = p - max(S_t - K, 0.0)
+            elif t == 1:  # Buy Call
+                pnl = -p + max(S_t - K, 0.0)
+            elif t == 2:  # Sell Put
+                pnl = p - max(K - S_t, 0.0)
+            elif t == 3:  # Buy Put
+                pnl = -p + max(K - S_t, 0.0)
+            total_pnl[i] += pnl * m
+            
+    return total_pnl
+
+@dataclass
+class Greeks:
+    delta: float = 0.0; gamma: float = 0.0; theta: float = 0.0
+    vega: float = 0.0; rho: float = 0.0
+    vanna: float = 0.0; volga: float = 0.0; charm: float = 0.0; speed: float = 0.0
+
+    def __add__(self, other):
+        return Greeks(**{f: getattr(self, f) + getattr(other, f) for f in ['delta','gamma','theta','vega','rho','vanna','volga','charm','speed']})
+
+    def negate(self):
+        return Greeks(**{f: -getattr(self, f) for f in ['delta','gamma','theta','vega','rho','vanna','volga','charm','speed']})
+
+    def scale(self, n):
+        return Greeks(**{f: getattr(self, f) * n for f in ['delta','gamma','theta','vega','rho','vanna','volga','charm','speed']})
+
+class BSM:
+    """Wrapper for Numba-optimized Black-Scholes-Merton functions."""
+    R = 0.07
+
+    @classmethod
+    def greeks(cls, S, K, T, r, sigma, otype='call'):
+        d, g, t, v, vn, vg, ch, sp = bsm_greeks_numba(S, K, T, r, sigma, is_call=(otype == 'call'))
+        return Greeks(delta=d, gamma=g, theta=t, vega=v, vanna=vn, volga=vg, charm=ch, speed=sp)
+
+    @classmethod
+    def call(cls, S, K, T, r, sigma):
+        return bsm_price_numba(S, K, T, r, sigma, is_call=True)
+
+    @classmethod
+    def put(cls, S, K, T, r, sigma):
+        return bsm_price_numba(S, K, T, r, sigma, is_call=False)
+
+    @classmethod
+    def prob_otm(cls, S, K, T, sigma, otype='call'):
+        if T <= 0 or sigma <= 0: return 0.5
+        sT = sigma * math.sqrt(T)
+        d2 = (math.log(S / K) + (cls.R - 0.5 * sigma**2) * T) / sT
+        return n_cdf(-d2) if otype == 'call' else n_cdf(d2)
+
+    @classmethod
+    def risk_score(cls, g, iv, rvw=1.0):
+        """§6.3: Composite Risk Score — regime-weighted"""
+        w = np.array([0.25, 0.20, 0.25, 0.15, 0.15])
+        w[2] *= rvw; w /= w.sum()
+        delta_r = abs(g.delta) * w[0]
+        gamma_r = min(abs(g.gamma) * iv * 100, 2.0) * w[1]
+        vega_r = min(abs(g.vega) / max(iv * 100, 1), 2.0) * w[2]
+        theta_p = min(max(-g.theta, 0) / max(abs(g.theta) + 1, 1), 1.0) * w[3]
+        tail = min(abs(g.vanna) + abs(g.volga) * 0.1, 2.0) * w[4]
+        return min((delta_r + gamma_r + vega_r + theta_p + tail) * 100, 100)
+
+class MC:
+    """Wrapper for Numba-optimized Monte Carlo functions."""
+    
+    @staticmethod
+    def terminal_prices(S, sigma, T, n=10000):
+        return generate_terminal_prices(S, sigma, T, n)
+
+    @staticmethod
+    def paths(S, sigma, T, n=100, steps=30):
+        return generate_paths_numba(S, sigma, T, n, steps)
+    
+    @staticmethod
+    def analyze(S, sigma, T, legs, n=10000, sim_vol=None):
+        vol_for_sim = sim_vol if sim_vol is not None else sigma
+        terminal = generate_terminal_prices(S, vol_for_sim, T, n)
+        
+        # Prepare arrays for Numba
+        strikes = np.array([l['strike'] for l in legs], dtype=np.float64)
+        prems = np.array([l['premium'] for l in legs], dtype=np.float64)
+        qtys = np.array([l.get('qty', 1) for l in legs], dtype=np.float64)
+        
+        types = np.zeros(len(legs), dtype=np.int32)
+        for i, l in enumerate(legs):
+            lt = l['type'].lower()
+            if 'sell' in lt and 'call' in lt: types[i] = 0
+            elif 'buy' in lt and 'call' in lt: types[i] = 1
+            elif 'sell' in lt and 'put' in lt: types[i] = 2
+            elif 'buy' in lt and 'put' in lt: types[i] = 3
+            
+        pnl = compute_strategy_pnl_numba(terminal, strikes, prems, types, qtys)
+        
+        pop = float(np.mean(pnl > 0))
+        ev = float(np.mean(pnl))
+        std = float(np.std(pnl))
+        return pop, ev, std
+
+    @staticmethod
+    def expected_move(S, σ, T):
+        moves = []
+        for conf in [0.6827, 0.9545, 0.9973]:
+            # z-score for normal distribution
+            # 1-alpha/2 = (1+conf)/2
+            z = sp_stats.norm.ppf((1 + conf) / 2)
+            m = S * σ * np.sqrt(max(T, 1e-6)) * z
+            moves.append({'conf': conf, 'move': m, 'upper': S + m, 'lower': S - m})
+        return moves
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -45,7 +274,7 @@ class SignalSpace:
 
     RAW_SIGNALS = [
         'IVPercentile', 'GARCH_Vol', 'RV_Composite', 'rsi_daily',
-        'adx', 'kalman_trend', '% change', 'GARCH_Persistence',
+        'adx', 'kalman_trend', 'GARCH_Persistence',
         'PCR', 'CUSUM_Alert'
     ]
 
@@ -55,9 +284,25 @@ class SignalSpace:
             stock.get('IVPercentile', 50), stock.get('GARCH_Vol', 20),
             stock.get('RV_Composite', 20), stock.get('rsi_daily', 50),
             stock.get('adx', 20), stock.get('kalman_trend', 0),
-            stock.get('% change', 0), stock.get('GARCH_Persistence', 0.95),
+            stock.get('GARCH_Persistence', 0.95),
             stock.get('PCR', 1.0), float(stock.get('CUSUM_Alert', False)),
         ], dtype=np.float64)
+
+    @staticmethod
+    def standardize(stock: dict, ustats: dict) -> dict:
+        """Map raw features to stationary Z-scores."""
+        if not ustats.get('valid'): return stock
+        raw = SignalSpace.extract(stock)
+        means = ustats['means']
+        cols = ustats['stds']
+        z = (raw - means) / np.maximum(cols, 1e-6)
+        
+        # Return a copy with 'z_' prefixed keys
+        names = SignalSpace.RAW_SIGNALS
+        scored = stock.copy()
+        for i, name in enumerate(names):
+            scored[f'z_{name}'] = z[i]
+        return scored
 
     @staticmethod
     def compute_universe_stats(all_signals: np.ndarray) -> dict:
@@ -139,6 +384,8 @@ class SignalSpace:
         return {
             'valid': True, 'n': n, 'd': d,
             'medians': medians, 'mads': mads,
+            'means': np.nanmean(all_signals, axis=0),
+            'stds': np.nanstd(all_signals, axis=0),
             'percentiles': percentiles,
             'corr_matrix': corr_matrix,
             'independence': independence,
@@ -228,7 +475,7 @@ class FuzzyRegime:
         return FuzzyRegime._soft_assign(trend_score, centers, widths)
 
     @staticmethod
-    def compute(stock: dict, ustats: dict) -> RegimeState:
+    def compute(stock: dict, ustats: dict, prev_regime: 'RegimeState' = None) -> RegimeState:
         ivp = stock.get('IVPercentile', 50)
         price = stock.get('price', 100)
         garch_p = stock.get('GARCH_Persistence', 0.95)
@@ -241,6 +488,12 @@ class FuzzyRegime:
             rsi, stock.get('% change', 0), stock.get('adx', 20),
             stock.get('kalman_trend', 0), ustats)
 
+        # Apply stickiness (Dampening) if transitioning
+        if prev_regime is not None:
+            # 95% persistence to ensure institutional stability in cross-sectional scans
+            vol_probs = 0.95 * prev_regime.vol_probs + 0.05 * vol_probs
+            trend_probs = 0.95 * prev_regime.trend_probs + 0.05 * trend_probs
+
         iv_rank = SignalSpace.percentile_rank(ivp, ustats['percentiles'], 0) if ustats.get('valid') else ivp / 100
 
         # Structural break: continuous, not binary
@@ -252,20 +505,20 @@ class FuzzyRegime:
             return -np.sum(p * np.log2(p)) / max(np.log2(len(p)), 1) if len(p) > 0 else 0
         entropy = (H(vol_probs) + H(trend_probs)) / 2
 
-        # Stability — universe-adaptive: "middle of distribution" = stable
+        # Stability — universe-adaptive
         stab = 0.5
-        if 0.25 <= iv_rank <= 0.75: stab += 0.15  # IVP in middle 50% of universe
+        if 0.25 <= iv_rank <= 0.75: stab += 0.15
         if 40 <= rsi <= 60: stab += 0.10
         if garch_p > 0.90: stab += 0.10
         if cusum: stab -= 0.25
         stab = np.clip(stab, 0.1, 0.95)
 
-        # Transition risk — universe-adaptive: extremes of distribution = reversion likely
+        # Transition risk
         t_risk = 0.20
         if garch_p < 0.90: t_risk += 0.15
         elif garch_p > 0.97: t_risk -= 0.10
         if cusum: t_risk += 0.30
-        if iv_rank > 0.90 or iv_rank < 0.10: t_risk += 0.15  # extreme in universe
+        if iv_rank > 0.90 or iv_rank < 0.10: t_risk += 0.15
         t_risk += (1 - stab) * 0.20
         t_risk = np.clip(t_risk, 0.05, 0.95)
 
@@ -376,13 +629,36 @@ class AdaptiveGating:
             AdaptiveGating.antifragility_boost(sname, regime.entropy),
         ])
         components = np.maximum(components, 0.01)
-        return np.clip(np.exp(np.mean(np.log(components))), 0.01, 1.0)
+        return np.prod(components) ** (1.0 / len(components))
 
     @staticmethod
     def min_premium(price: float, dte: int) -> float:
         """Adaptive — relative to stock price, not fixed ₹0.50."""
         dte_factor = max(0.3, min(1.0, dte / 30))
         return max(0.10, price * 0.0002 * dte_factor)
+
+class CostScrub:
+    """Indian FnO Transaction Cost Model."""
+    @staticmethod
+    def calculate(net_credit, max_profit, lot_size, n_legs, price) -> dict:
+        # Realistic Indian broker + tax model
+        brokerage = 40 * max(1, n_legs // 2)  # ₹20/order
+        premium = abs(net_credit or max_profit) * lot_size
+        stt = premium * 0.0005  # 0.05% on sell
+        txn_charge = premium * 0.00053
+        gst = (brokerage + txn_charge) * 0.18
+        slippage = price * lot_size * 0.0005 * n_legs # 5bps slippage (NSE Institutional)
+        
+        total = brokerage + stt + txn_charge + gst + slippage
+        impact = total / max(abs(max_profit), 1)
+        
+        return {
+            'total_cost': total,
+            'impact_pct': impact * 100,
+            'is_hollow': impact > 0.50,  # Gate: >50% impact is unacceptable
+            # Parabolic decay: zeroes out rapidly if impact > 35%
+            'penalty': np.clip(1.0 - (impact / 0.35)**2, 0.0, 1.0)
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -801,8 +1077,10 @@ class AdaptiveEngine:
         return self.universe_stats
 
     # ── Phase 2: Regime ──
-    def compute_regime(self, stock: dict) -> RegimeState:
-        r = FuzzyRegime.compute(stock, self.universe_stats)
+    def compute_regime(self, stock: dict, prev_regime: RegimeState = None) -> RegimeState:
+        # Stationary feature mapping
+        standardized_stock = SignalSpace.standardize(stock, self.universe_stats)
+        r = FuzzyRegime.compute(standardized_stock, self.universe_stats, prev_regime)
         self.regime_states.append(r)
         self._transition_history.append(r.transition_risk)
         return r
@@ -824,11 +1102,27 @@ class AdaptiveEngine:
 
     # ── Phase 6: Score ──
     def score(self, pop_mean, pop_std, ev_ratio, sharpe, viability,
-              regime: RegimeState, model_agreement) -> ConvictionDistribution:
+              regime: RegimeState, model_agreement, 
+              strategy_info: dict = None) -> ConvictionDistribution:
         sq = np.mean(self.universe_stats.get('signal_weights', [0.1])) * 10 \
             if self.universe_stats.get('valid') else 0.5
+        
+        # Apply Cost Scrubbing
+        cost_penalty = 1.0
+        if strategy_info:
+            costs = CostScrub.calculate(
+                strategy_info.get('net_credit'),
+                strategy_info.get('max_profit'),
+                strategy_info.get('lot_size', 1),
+                strategy_info.get('n_legs', 2),
+                strategy_info.get('price', 100)
+            )
+            cost_penalty = costs['penalty']
+
+        adjusted_viability = viability * cost_penalty
+        
         cd = ProbabilisticScoring.compute(
-            pop_mean, pop_std, ev_ratio, sharpe, viability,
+            pop_mean, pop_std, ev_ratio, sharpe, adjusted_viability,
             regime.entropy, model_agreement, min(sq, 1.0), regime.transition_risk)
         self.conviction_dists.append(cd)
         return cd
