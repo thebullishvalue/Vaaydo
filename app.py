@@ -2,7 +2,7 @@
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║  VAAYDO (वायदो) — FnO Trade Intelligence                              ║
 ║  Quantitative Options Strategy Screener & Analytics Platform           ║
-║  Version 4.0.0 | Hemrek Capital — Adaptive Intelligence Engine         ║
+║  Version 4.2.0 | Hemrek Capital — Adaptive Intelligence Engine         ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 
 ENGINES (20):
@@ -84,7 +84,7 @@ warnings.filterwarnings('ignore')
 # ═══════════════════════════════════════════════════════════════════════════════
 
 st.set_page_config(page_title="VAAYDO | FnO Intelligence", layout="wide", page_icon="⚡", initial_sidebar_state="expanded")
-VERSION = "4.1.0"
+VERSION = "4.2.0"
 
 # v4.0: Global engine instance (initialized in main())
 _engine = None
