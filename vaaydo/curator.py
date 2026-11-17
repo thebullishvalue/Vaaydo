@@ -21,7 +21,7 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-from . import bundle, ledger as LG, session, signal
+from . import banlist, bundle, ledger as LG, session, signal
 from .data import bhavcopy
 from .simulate import futures_cost
 
@@ -43,6 +43,8 @@ class Run:
     ratios: dict
     dates: list
     notes: list = field(default_factory=list)
+    ban: frozenset = frozenset()
+    ban_next: tuple = (None, None)
 
 
 def _sessions_up_to(asof: date | None) -> list[date]:
@@ -114,7 +116,17 @@ def run(asof: date | None = None, progress=None) -> Run:
     for s, g in P.groupby("symbol"):
         g = g.set_index("date")
         ratios[(s, 1)], ratios[(s, -1)] = g["stopL_r"], g["stopS_r"]
-    led = LG.replay(M, dates, daily, ratios)
+    say(55, "checking the F&O ban list")
+    try:
+        ban = banlist.live(dates)
+        nb_date, nb = banlist.next_session(A) if asof is None or pd.Timestamp(asof) >= A else (None, None)
+    except Exception:
+        ban, nb_date, nb = banlist.banned(), None, None
+    led = LG.replay(M, dates, daily, ratios, fno_ban=ban)
+    if nb:
+        for s_, (act, why) in list(led.decisions.items()):
+            if act == "ENTER" and s_ in nb:
+                led.decisions[s_] = ("ENTER", f"in the F&O ban on {nb_date:%d %b}: no fresh position until it lifts")
     ext = {d: (g.set_index("symbol")["pct"] - 0.5).abs().to_dict() for d, g in sc.groupby("date")}
 
     say(70, "reading option flow")
@@ -205,7 +217,7 @@ def run(asof: date | None = None, progress=None) -> Run:
                            exit=p.legs[-1].exit_date.date(), exit_px=p.legs[-1].exit_px, legs=len(p.legs), why=why,
                            sessions=int(((M.cal >= p.legs[0].entry_date) & (M.cal <= p.legs[-1].exit_date)).sum()),
                            ret=_trade_return(p, cost)))
-    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ext, ratios, dates, notes)
+    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ext, ratios, dates, notes, ban, (nb_date, nb))
 
 
 def _positions(M, led, A, screen: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -277,5 +289,6 @@ def sized(r: Run, capital: float, leverage: float = 1.0, universe: frozenset | N
             c, lot = r.market.px(A, s, e), r.market.lot.get((A, s, e), 0)
             if np.isfinite(c) and lot:
                 notional[s] = c * lot
-    led = LG.replay(r.market, r.dates, daily, r.ratios, ext=r.ext, notional=notional, cap=capital * leverage)
+    led = LG.replay(r.market, r.dates, daily, r.ratios, ext=r.ext, notional=notional, cap=capital * leverage,
+                    fno_ban=getattr(r, "ban", None))
     return _positions(r.market, led, A, r.screen)

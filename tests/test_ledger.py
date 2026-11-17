@@ -84,3 +84,11 @@ def test_contracts_tradable_at_the_latest_date():
     M = LG.Market(pd.DataFrame(rows))
     assert M.active[(days[-1], "X")] == pd.Timestamp("2026-11-24")     # 5 sessions left > 3
     assert M.fill_contract[(days[-1], "X")] == pd.Timestamp("2026-11-24")
+
+
+def test_fno_ban_defers_the_entry_to_the_first_unbanned_session():
+    M, days = _market({"2026-03-26": [100, 100, 101, 102, 103, 104]})
+    ban = frozenset({(days[1], "X"), (days[2], "X")})
+    led = LG.replay(M, days, {d: {"X": 1} for d in days}, _ratios(days), fno_ban=ban)
+    p = led.held["X"]
+    assert p.legs[0].entry_date == days[3] and p.signal == days[2]   # re-decided at the last banned close

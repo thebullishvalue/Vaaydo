@@ -8,7 +8,19 @@ in which contract, at what price, with a stop.
 > Long the stocks where the options crowd leans hardest to puts; short the ones where
 > it leans hardest to calls; equal rupees each side.
 
-## What a run returns
+## Two universes
+
+* **F&O Stocks**: the trades. Every NSE F&O stock screened on option positioning; the
+  stock-futures book as tickets. Index-constituent lists filter it.
+* **Indices · NIFTY & BANKNIFTY**: the index desk. Option chain (OI by strike, max pain,
+  walls, dealer gamma and the gamma flip, hedge flow), volatility (IV term structure, smile,
+  skew, priced move, India VIX), futures (basis, roll cost, rollover against past expiries),
+  participants (FII / DII / Pro / Client), and the evidence. **It gives no index trades:**
+  every index hypothesis VAAYDO registered — sixteen directional readings, trend and
+  volatility-managed futures, an iron condor and an iron fly on real fills — failed on
+  2019–2026 (docs/PREREGISTRATION.md). Two near-misses are tracked on paper.
+
+## What a run returns (F&O Stocks)
 
 | Tab | |
 |---|---|
@@ -29,10 +41,10 @@ names that fit, long and short balanced.
 
 | Book (1× gross, net of costs, 2019 – Nov 2026) | Sharpe | Return / yr | Volatility | Worst drawdown |
 |---|---|---|---|---|
-| model book, ~30 names | 0.78 | 5.8% | 7.4% | −13.5% |
-| 20 names | 0.77 | 6.4% | 8.4% | −13.0% |
-| 12 names | 0.71 | 7.3% | 10.4% | −16.4% |
-| 6 names | 0.31 | 4.5% | 14.6% | −25.3% |
+| model book, ~30 names | 0.74 | 5.5% | 7.4% | −13.5% |
+| 20 names | 0.75 | 6.3% | 8.4% | −13.0% |
+| 12 names | 0.71 | 7.4% | 10.4% | −16.4% |
+| 6 names | 0.27 | 3.9% | 14.6% | −25.3% |
 
 A modest, market-neutral edge. Below ~12 names it is mostly stock-specific noise.
 Designed on 2024–25 and confirmed on 2019–22, which no design choice had seen. Flat in
@@ -45,6 +57,9 @@ Designed on 2024–25 and confirmed on 2019–22, which no design choice had see
 * Contracts roll at the close **3 sessions before expiry**, counting expiries as NSE
   lists them (holiday-shifted expiries included). Each leg keeps its own contract's lot.
 * Stops are decided on the close and filled at the next open; no intraday look-ahead.
+* No fresh position in a stock during its **F&O ban** (open interest above 95% of the
+  market-wide limit): the entry waits until the ban lifts. Tomorrow's ban list is read the
+  evening before and shown on the screen.
 * Splits, bonuses and demergers rescale entry, stop and lot by the exchange's factor,
   confirmed by the price jump, so P&L is continuous and lot revisions aren't mistaken
   for corporate actions.
@@ -70,7 +85,7 @@ missing days itself.
 ## Layout
 
 ```
-app.py                  the screener (Streamlit, Graphite design system in ui/)
+app.py                  the screener (Streamlit, Graphite design system in ui/; ui/desk.py is the index desk)
 vaaydo/
   curator.py            one run: data, scores, the book replay, flow, the screen
   ledger.py             positions as chains of contract legs: fills, rolls, stops, corporate actions
@@ -78,7 +93,11 @@ vaaydo/
   features.py           per-stock option/futures readings from one day's bhavcopy
   flowscan.py           contract-level option flow: buyers/writers opening, unusual, surge
   session.py            recent sessions, futures build-up, delivery
-  bundle.py · universe.py   shipped data; index universes
+  bundle.py · universe.py   shipped data; index-constituent filters
+  banlist.py            NSE F&O ban list (entries wait out a ban)
+  indices.py            the index desk's readings: chain, gamma, volatility, futures, participants
+  index_desk.py         one desk run: history + newer sessions, chain views, paper candidates
+  index_research.py · index_options.py · gamma.py   the index and gamma tests
   pragyam.py            Pragyam risk engine (thebullishvalue/Indicator), verbatim
   data/                 NSE F&O bhavcopy (UDiFF + legacy), equity bhavcopy, Yahoo history
   alpha.py · simulate.py · book.py · longtest.py · optexpr.py   the research that chose the signal

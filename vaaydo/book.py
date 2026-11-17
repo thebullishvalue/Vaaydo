@@ -104,7 +104,7 @@ class Prices:
 
 def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, stops: pd.DataFrame | None = None,
              stop_mult=2.0, start=None, end=None, membership: dict | None = None, trail: bool = False,
-             ban_after_stop: bool = True) -> pd.DataFrame:
+             ban_after_stop: bool = True, fno_ban: frozenset | None = None) -> pd.DataFrame:
     """scores: date, symbol, score (higher = long). Returns a daily frame of book returns."""
     cost = futures_cost() if cost is None else cost
     half = cost / 2
@@ -190,7 +190,7 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                 if held is not None and held["side"] == w:
                     continue
                 e = P.active.get((nxt, s))                 # the contract active on the fill day (no instant roll)
-                if e is None:
+                if e is None or (fno_ban and (nxt, s) in fno_ban):   # no fresh position during an F&O ban
                     continue
                 o, c_now = P.px(nxt, s, e, "open"), P.px(nxt, s, e)
                 if not (np.isfinite(o) and np.isfinite(c_now)):

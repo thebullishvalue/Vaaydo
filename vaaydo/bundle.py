@@ -125,3 +125,35 @@ def refresh(progress=print) -> None:
     pd.concat([P, newp], ignore_index=True).drop_duplicates(["date", "symbol"], keep="last") \
         .to_parquet(PRG, index=False, compression="zstd")
     progress(f"bundle now ends {new_days[-1]}")
+    refresh_index(new_days, progress)
+
+
+def refresh_index(new_days, progress=print) -> None:
+    """Append the index desk's readings, participant OI, the F&O ban list and India VIX."""
+    from . import banlist, indices as I
+    p = ROOT / "index_panel.parquet"
+    if p.exists():
+        P = pd.read_parquet(p)
+        rows = [r for d in new_days for r in I.day(d)]
+        if rows:
+            pd.concat([P, pd.DataFrame(rows)], ignore_index=True).drop_duplicates(["date", "symbol"], keep="last") \
+                .to_parquet(p, index=False, compression="zstd")
+    q = ROOT / "participant_oi.parquet"
+    if q.exists():
+        Q = pd.read_parquet(q)
+        add = [x for x in (I.participant_day(d) for d in new_days) if x is not None]
+        if add:
+            pd.concat([Q, *add], ignore_index=True).drop_duplicates(["date", "client"], keep="last").to_parquet(q, index=False)
+    b = ROOT / "banlist.parquet"
+    if b.exists():
+        B = pd.read_parquet(b)
+        add = [(pd.Timestamp(d), s) for d in new_days for s in ((banlist.day(d) or []) + [""])]
+        pd.concat([B, pd.DataFrame(add, columns=["date", "symbol"])], ignore_index=True).drop_duplicates() \
+            .to_parquet(b, index=False)
+    v = ROOT / "vix.parquet"
+    try:
+        x = I.yahoo("VIX", start="2018-01-01")
+        x.rename("vix").rename_axis("date").reset_index().to_parquet(v, index=False)
+    except Exception:
+        pass
+    progress("index desk data refreshed")

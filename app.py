@@ -19,10 +19,12 @@ warnings.filterwarnings("ignore")
 
 import ui.components as ui
 from ui.theme import inject_css, progress_bar, chart_layout, style_axes, chart_color
-from vaaydo import curator, signal
+from vaaydo import curator, index_desk, signal
+import ui.desk as desk_view
 from vaaydo.universe import UNIVERSES, constituents
 
-VERSION = "6.2.0"
+VERSION = "7.0.0"
+STOCKS, INDICES = "F&O Stocks", "Indices · NIFTY & BANKNIFTY"
 st.set_page_config(page_title="VAAYDO | F&O Trade Screener", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
 if "theme" not in st.session_state:
@@ -66,7 +68,11 @@ def fmt_date(d) -> str:
 with st.sidebar:
     ui.render_nav_brand("VAAYDO", "वायदो · F&O Trade Screener")
     st.markdown('<div class="sidebar-title">Universe</div>', unsafe_allow_html=True)
-    universe = st.selectbox("Universe", UNIVERSES, key="sb_universe", label_visibility="collapsed")
+    kind = st.selectbox("Universe", [STOCKS, INDICES], key="sb_kind", label_visibility="collapsed")
+    universe = "All F&O stocks"
+    if kind == STOCKS:
+        st.markdown('<div class="sidebar-title">Filter</div>', unsafe_allow_html=True)
+        universe = st.selectbox("Filter", UNIVERSES, key="sb_universe", label_visibility="collapsed")
     st.markdown('<div class="sidebar-title">Analysis Mode</div>', unsafe_allow_html=True)
     mode = st.selectbox("Mode", ["Single Date", "Historical Range"], key="sb_mode", label_visibility="collapsed")
     today = date.today()
@@ -82,13 +88,15 @@ with st.sidebar:
                               key="sb_start", label_visibility="collapsed")
         asof = c2.date_input("End", today, min_value=date(2024, 7, 8), max_value=today, key="sb_end",
                              label_visibility="collapsed")
-    st.markdown('<div class="sidebar-title">Sizing (optional)</div>', unsafe_allow_html=True)
-    size_on = st.toggle("Size to my capital", value=False, key="sb_size")
-    capital, leverage = None, 1.0
+    size_on, capital, leverage = False, None, 1.0
+    if kind == STOCKS:
+        st.markdown('<div class="sidebar-title">Sizing (optional)</div>', unsafe_allow_html=True)
+        size_on = st.toggle("Size to my capital", value=False, key="sb_size")
     if size_on:
         capital = st.number_input("Capital (₹)", 500_000, 500_000_000, 8_500_000, step=500_000, key="sb_capital")
         leverage = st.select_slider("Gross exposure ÷ capital", [0.5, 0.75, 1.0, 1.25, 1.5, 2.0], value=1.0, key="sb_lev")
-    run_clicked = st.button("RUN SCREENER" if mode == "Single Date" else "RUN HARVEST", type="primary", width="stretch")
+    run_clicked = st.button(("RUN DESK" if kind == INDICES else "RUN SCREENER") if mode == "Single Date" else "RUN HARVEST",
+                            type="primary", width="stretch")
     st.markdown('<div class="sidebar-title">Appearance</div>', unsafe_allow_html=True)
     look = st.radio("Appearance", ["Slate", "Paper"], index=0 if st.session_state["theme"] == "dark" else 1,
                     horizontal=True, key="sb_theme", label_visibility="collapsed")
@@ -103,6 +111,11 @@ def cached_run(asof_key: str, day_key: str):
     return curator.run(None if asof_key == "latest" else date.fromisoformat(asof_key))
 
 
+@st.cache_resource(show_spinner=False, ttl=6 * 3600, max_entries=4)
+def cached_desk(asof_key: str, day_key: str):
+    return index_desk.run(None if asof_key == "latest" else date.fromisoformat(asof_key))
+
+
 @st.cache_data(show_spinner=False)
 def track() -> pd.DataFrame:
     return pd.read_parquet(TRACK)
@@ -115,7 +128,21 @@ def uni_filter(df: pd.DataFrame, members) -> pd.DataFrame:
 
 
 # ── run ─────────────────────────────────────────────────────────────────────
-if run_clicked:
+if run_clicked and kind == INDICES:
+    slot = st.empty()
+    key = "latest" if asof >= today else asof.isoformat()
+    try:
+        progress_bar(slot, 5, "reading the index chains")
+        dk = cached_desk(key, today.isoformat())
+        progress_bar(slot, 100, "desk ready")
+        st.session_state["desk"] = dk
+        st.session_state["view"] = INDICES
+        st.session_state["desk_meta"] = dict(mode=mode, start=start, asof=asof)
+        st.session_state["run_error"] = None
+    except Exception as e:
+        st.session_state["run_error"] = str(e)
+    slot.empty()
+elif run_clicked:
     slot = st.empty()
     key = "latest" if asof >= today else asof.isoformat()
     try:
@@ -126,6 +153,7 @@ if run_clicked:
         progress_bar(slot, 100, "analysis complete")
         st.session_state["run"] = r
         st.session_state["run_meta"] = dict(universe=universe, mode=mode, start=start, asof=asof)
+        st.session_state["view"] = STOCKS
         st.session_state["run_error"] = None
     except Exception as e:
         st.session_state["run_error"] = str(e)
@@ -139,7 +167,8 @@ def landing():
     st.markdown("""<div class="lede">
   <div class="lede-claim">Every NSE F&amp;O stock, screened each evening on where its options market is positioned —
     and the futures trades that follow from it, as tickets.</div>
-  <div class="lede-cta">Pick a universe, a mode and a date in the rail, then <strong>Run</strong>.</div>
+  <div class="lede-cta">Two universes: <strong>F&amp;O Stocks</strong>, where the trades are, and <strong>Indices</strong>,
+    the NIFTY and BANKNIFTY desk. Pick one, a mode and a date in the rail, then <strong>Run</strong>.</div>
 </div>""", unsafe_allow_html=True)
     T = track()
     ui.render_section_header("Coverage", icon="layers")
@@ -175,7 +204,9 @@ def landing():
            ("Flow", "Breadth, sectors, futures build-up, option flow."),
            ("Contracts", "The option-contract scanner."),
            ("Screen", "Every stock with every reading."),
-           ("System Data", "Track record, evidence, exports, definitions."))
+           ("System Data", "Track record, evidence, exports, definitions."),
+           ("Indices desk", "NIFTY and BANKNIFTY: gamma, OI and walls, volatility, participants, rollover, and the "
+                            "evidence on every index trade tested."))
     st.markdown('<div class="outcome-grid">' + "".join(
         f'<div class="outcome"><div class="o-t">{html.escape(t)}</div><div class="o-d">{html.escape(d)}</div></div>'
         for t, d in out) + "</div>", unsafe_allow_html=True)
@@ -189,7 +220,12 @@ def footer():
 if st.session_state.get("run_error"):
     ui.render_empty_state("The run could not complete", html.escape(st.session_state["run_error"]),
                           eyebrow="Run failed", action_label="Try another date, or run again in a minute")
-if r is None:
+view = st.session_state.get("view")
+if view == INDICES and st.session_state.get("desk") is not None:
+    desk_view.render(st.session_state["desk"], st.session_state.get("desk_meta", {}))
+    footer()
+    st.stop()
+if r is None or view != STOCKS:
     landing()
     footer()
     st.stop()
@@ -228,6 +264,13 @@ if size_on and capital and len(held) < 10:
                         body=f"{len(held)} names at {inr(capital)} and {leverage:g}×. Six names backtested at Sharpe "
                              f"{sr(k6):.2f}, twelve at {sr(k12):.2f}: the edge needs enough names for stock-specific "
                              f"noise to wash out."))
+nb_date, nb = getattr(r, "ban_next", (None, None))
+if nb:
+    hit = [s for s in nb if members is None or s in members]
+    notices.append(dict(kind="warning", title=f"F&O ban on {nb_date:%d %b}",
+                        body=f"{', '.join(nb)}: no fresh positions in these until the ban lifts. "
+                             + ("A new signal among them waits." if any(
+                                 s in set(r.positions.loc[r.positions['action'] == 'ENTER', 'symbol']) for s in hit) else "")))
 for n in r.notes:
     notices.append(dict(kind="info", title="Note", body=html.escape(n)))
 ui.render_notice_rail(notices)

@@ -130,7 +130,7 @@ class Ledger:
 
 
 def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None, notional: dict | None = None,
-           cap: float | None = None, mult: float = STOP_MULT) -> Ledger:
+           cap: float | None = None, mult: float = STOP_MULT, fno_ban: frozenset | None = None) -> Ledger:
     """dates: decision sessions, ascending. model: {date: {symbol: side}}. ratios:
     {(symbol, side): Series} Pragyam stop ratio. With cap: capital-limited book (most
     extreme first, long/short notional balanced), else the full model book."""
@@ -145,9 +145,9 @@ def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None,
                 o = M.px(d, s, e, "open") if e is not None else np.nan
                 if not np.isfinite(o):
                     o = M.px(d, s, e, "close") if e is not None else np.nan
-                if e is None or not np.isfinite(o):
-                    del held[s]                                   # unfillable: no position
-                    continue
+                if e is None or not np.isfinite(o) or (fno_ban and (d, s) in fno_ban):
+                    del held[s]                                   # unfillable or in an F&O ban: no position;
+                    continue                                      # re-decided at today's close
                 p.legs.append(Leg(e, d, o, int(M.lot.get((d, s, e), 0) or 0)))
                 p.best = o
                 p.pending = False

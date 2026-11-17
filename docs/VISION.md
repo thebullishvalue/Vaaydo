@@ -80,3 +80,30 @@ spreads in every test.
 * Shipped with the repo, refreshed nightly by a workflow: score inputs and the futures
   price history since July 2024. The app fetches only sessions after the bundle.
 * Research store (not shipped): the 2019–2024 archive, every study's inputs.
+
+## Two universes (v7)
+
+**F&O Stocks** is where VAAYDO trades: the option-positioning score across ~210 stocks, the
+futures book, the tickets. Index-constituent lists (NIFTY 50, Bank, IT …) filter it.
+
+**Indices · NIFTY & BANKNIFTY** is the index desk. Everything end-of-day data can say about
+the two indices, read every session from NSE's own files:
+
+| Layer | Readings |
+|---|---|
+| Option chain | OI and OI change by strike, max pain, call and put walls, put/call ratios (all and nearest), dealer gamma by strike, gamma flip, writers' hedge flow |
+| Volatility | ATM IV front and 30-day, term structure, smile, skew, priced move to expiry (ATM straddle), realised vol, India VIX and its percentile |
+| Futures | basis and roll cost over the risk-free rate, rollover against the same day of the last twelve expiries, futures OI |
+| Participants | FII / DII / Pro / Client index futures long share and index options stance (NSE participant-wise OI) |
+| Evidence | every index hypothesis tested, with its t in each period; the premium-selling cycles on real fills |
+
+**It gives no index trades.** Sixteen directional readings, three futures strategies, an iron
+condor and an iron fly were registered and tested on 2019–2026 (docs/PREREGISTRATION.md).
+None passed. Being long index futures (SR 0.36) beat every rule; selling the volatility
+premium lost after real fills. A desk that showed trades anyway would be guessing with
+money. Two near-misses — the FII options stance and a condor sold only when IV is in its top
+decile — are tracked on paper from 18 Nov 2026 and promoted only if they earn it out of sample.
+
+What the index desk *is* for: knowing where the index market is positioned before acting on
+a stock ticket (gamma regime, walls, priced move, who is short what), and an honest,
+growing record of what does and does not work on NIFTY and BANKNIFTY.
