@@ -1,0 +1,26 @@
+name: Refresh score inputs
+on:
+  schedule:
+    - cron: "17 14 * * 1-5"   # 19:47 IST, after NSE publishes the bhavcopy
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python scripts/refresh_bundle.py
+        env:
+          VAAYDO_DATA: ${{ runner.temp }}/vaaydo
+      - name: Commit
+        run: |
+          git config user.name "vaaydo-bot"
+          git config user.email "vaaydo-bot@users.noreply.github.com"
+          git add data/opi_inputs.parquet
+          git diff --cached --quiet || git commit -m "data: score inputs through $(date +%F)"
+          git push

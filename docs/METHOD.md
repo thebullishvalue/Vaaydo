@@ -1,64 +1,72 @@
-# How VAAYDO decides
+# How VAAYDO picks trades
 
-## The principle
+## The idea in one paragraph
 
-**A trade must have earned its place on real prices before VAAYDO will suggest it.**
+Every evening NSE publishes the close of every option on every F&O stock. In those
+chains you can see, stock by stock, which way the options crowd leans: whether people
+are buying puts or calls, whether downside protection is expensive or cheap, and whether
+put or call open interest is being added. **When the options crowd leans hardest to puts
+on a stock, that stock has tended to beat the other F&O stocks over the following weeks;
+when it leans hardest to calls, it has tended to lag.** VAAYDO goes long the first group
+and short the second, through stock futures, in equal rupee amounts, so a NIFTY move
+largely cancels out.
 
-Most option dashboards rank trades by probability of profit, or by a model's opinion of
-"fair" volatility. VAAYDO's own research (Playbook tab, `docs/RESEARCH.md`) showed why
-that fails here. On 2+ years of NSE prices, short-premium structures won 70–90% of the
-time and still lost money after costs, and no volatility forecast beat the market's own
-implied volatility out of sample.
+## The score (Option Positioning Index)
 
-So the system is split in two:
+For every F&O stock, each session, six readings from its option chain, each ranked
+against all other F&O stocks that day:
 
-| | decides | from |
-|---|---|---|
-| **Playbook** | *what* to trade | each rule's net record on real prices, judged only on data before the decision |
-| **Risk model** | *how much*, and what can go wrong | market-implied volatility + the stock's own fat tails |
+| Reading | Leans bullish for the score when… |
+|---|---|
+| put/call contracts traded | more puts than usual are traded |
+| put/call open interest | more puts than usual are open |
+| put skew (5% OTM put IV − ATM IV) | protection is expensive |
+| call skew (5% OTM call IV − ATM IV) | upside calls are cheap |
+| call IV − put IV at the same strikes | calls are cheap relative to puts |
+| put OI added − call OI added | today's new positions lean to puts |
 
-## Each day, after the close (`sync → research → scan → mark`)
+The six ranks are averaged into the day's reading, and **the score is its 10-session
+average**. Daily readings are noisy, because option closes are not simultaneous; the
+crowd's positioning moves slowly. Averaging keeps the information and removes most of
+the noise, which also cuts trading by 5×.
 
-1. **Data.** The NSE F&O bhavcopy has every contract's close, settlement price, volume,
-   open interest and lot size. Expiries, lots and corporate actions all come from it.
-2. **Read every chain.** For each underlying: the first expiry 20–60 days out, implied
-   vol of every traded option (Black-76 off the futures price), a fitted smile, 25Δ skew,
-   the IV term structure, 1-month realised vol, chain liquidity, futures positioning, and
-   option OI walls.
-3. **Features → terciles.** Each stock's ATM IV, IV / 1M realised, put skew and chain
-   liquidity are ranked into thirds within today's cross-section, the same definitions
-   the rules were tested on.
-4. **Match the playbook.**
-   * **Live** rule (net mean > 0, t ≥ 2.5, ≥ 12 prior cycles): matching names become
-     trade candidates.
-   * **Watch** rule (net mean > 0, t ≥ 1.5): matching names go on the watchlist, shown and
-     never traded.
-   * Names with an IV term inversion (near-month ATM IV > next month's by 8%: an event is
-     priced) get no short-premium trades.
-5. **Value each candidate.** Entry at the worse of the close and the fitted-smile price,
-   ± a liquidity-dependent half-spread, plus every statutory charge. Max loss includes the
-   cost of closing at the worst point. P(profit), tail loss and breakevens come from a
-   distribution centred on the futures price, scaled to ATM IV, with the stock's own
-   bootstrapped fat tails.
-6. **Build the book.** Max loss per trade ≤ 1.5% of capital. At most 2 positions among
-   stocks whose returns correlate > 0.6. Worst NIFTY gap (±3/6/10%, each stock by its
-   beta) ≤ 8% of capital. At most 10 positions and 20% of capital at risk.
-7. **Manage.** Short premium: close at 50% of max profit. Long premium: close at +100%.
-   Stock options: close 3 trading days before expiry (physical settlement). NIFTY: cash
-   settled, can be held. The Book tab marks every position at NSE settlement prices and
-   flags the action due.
+## The book
 
-## What you'll usually see
+* **Enter long** when a stock's score is in the top 5% of F&O stocks; **hold** while it
+  stays in the top 15%. Shorts mirror this at the bottom. (Entering and exiting at
+  different thresholds stops the book churning on small wiggles.)
+* **One lot per name**, futures contract at least a week from expiry, rolled 3 sessions
+  before expiry. Stock futures are physically settled, so nothing is held into expiry.
+* **Disaster stop** at twice Pragyam's stop distance (Pragyam's stop is touched 20% of
+  the time within 10 sessions; twice that is rarely touched). Tighter stops were tested
+  and cut returns: this trade needs room.
+* **Your book** is the subset that fits your capital: names you hold stay while they are
+  in the model book; freed capital goes to the most extreme new names, alternating to
+  keep long and short notional equal. The app replays this every day, so your orders are
+  the same however often you open it.
 
-**"No trades."** Over the history studied, no rule qualified, and the walk-forward
-playbook stood aside throughout. That saved the 3–16% of risk per trade that every
-mechanical short-premium rule lost. Standing aside is the system working, not failing.
-Every new cycle is added to the evidence (`python -m vaaydo research`), so a rule that
-starts working will go live on its own record.
+## Why futures, not options
 
-## Limits
+The signal comes *from* options, but options are a poor way to *trade* it. On the same
+entry signals 2019–2026, bull call and bear put spreads lost 6–16% of the premium paid
+per trade in every period, because two option spreads in and out cost more than the
+edge. Futures cost about 0.13% round trip. Credit spreads, condors and straddles lost
+money even unconditionally (docs/RESEARCH.md).
 
-* Fills are modelled, not observed. Work limit orders at or better than the plan's
-  entry; calibrate the spread model from your broker's quotes (`costs.calibrate_spread`).
-* End-of-day only. VAAYDO doesn't watch intraday moves; your broker's stop orders do.
-* 27 monthly cycles is one market regime. Treat every number as provisional.
+## What Pragyam and Order Flow contribute
+
+* **Pragyam** (thebullishvalue/Indicator) supplies the risk: its calibrated stop sets
+  each trade's disaster stop, and its 80% 10-session cone is shown on every order.
+  Pragyam's own research found price charts don't forecast direction, and VAAYDO's tests
+  agree: every price-only signal (trend, momentum, reversal, Pragyam's surprise and
+  trend tapes) was null cross-sectionally.
+* **Order Flow** (MrChartist/order-flow) supplies the reading of positioning: futures
+  build-up, option-OI walls, put/call ratios. Shown on every order as context. Futures
+  build-up and OI walls alone did not predict returns; the option-chain readings did.
+
+## What to expect
+
+Backtest 2019 – Nov 2026, net of costs, at 1× gross exposure: about 8–9% a year with
+8–10% volatility for 12–30 names, worst drawdown 13–17%, one or two losing years. It
+was flat in 2023 – mid-2024 and weak in 2026 so far. Plan for a live Sharpe of 0.5–0.8,
+and pause if the book loses more than 1.5× its worst backtest drawdown.

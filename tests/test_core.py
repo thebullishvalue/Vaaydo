@@ -121,3 +121,21 @@ def test_expiry_day_marks_use_intrinsic_against_final_settlement():
     o = pd.DataFrame(dict(date=[d, d, d - pd.Timedelta(days=1)], expiry=[d, d, d], strike=[25300.0, 25500.0, 25300.0],
                           otype=["CE", "PE", "CE"], settle=[25387.4, 25387.4, 150.0], mark=[25387.4, 25387.4, 150.0]))
     assert expiry_day_marks(o).round(2).tolist() == [87.4, 112.6, 150.0]
+
+
+def test_futures_zero_prices_are_missing_not_zero(tmp_path):
+    """Untraded futures carry open/high/low = 0 in the bhavcopy; they must never fill or stop."""
+    from vaaydo.simulate import Futures
+    d = pd.bdate_range("2026-01-01", periods=20)
+    rows = []
+    for i, day in enumerate(d):
+        o = h = l = 100.0 + i
+        if i == 3:
+            o = h = l = 0.0                                   # untraded day
+        rows.append(dict(date=day, symbol="X", expiry=pd.Timestamp("2026-03-26"), open=o, high=h + 1, low=l - 1 if l else 0.0,
+                         close=100.0 + i, oi=10, contracts=1, lot=1))
+    p = tmp_path / "f.parquet"
+    pd.DataFrame(rows).to_parquet(p)
+    F = Futures(p)
+    t = F.trade("X", d[0], 1, 10, stop_ratio=0.9, cost=0.0)
+    assert t is not None and t["exit_reason"] == "time" and t["gross"] > 0

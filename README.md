@@ -1,74 +1,68 @@
 # VAAYDO (वायदो)
 
-**An evidence-gated F&O desk for NSE options.** It reads every option chain each evening,
-says which trades have *earned* a place on real prices, sizes them against your
-capital, and keeps an honest book.
+**An F&O trade curator for NSE.** Every evening it reads the option chain of every F&O
+stock, scores where the options crowd is positioned, and gives you tomorrow's stock
+futures orders, sized to your capital, with a stop and a reason for each.
 
-Most days it will tell you: **no trades**. On 2+ years of NSE data, every mechanical
-premium-selling strategy tested lost money after costs, despite winning 70–90% of the
-time. VAAYDO exists to keep you out of those trades, and to tell you when that changes.
+> Long the stocks where the options crowd leans hardest to puts; short the ones where
+> it leans hardest to calls; equal rupees each side.
 
-## What's in it
+## What you get each evening
 
-| Tab | What it shows |
-|---|---|
-| **Today** | The plan: trades from live rules (sized, stress-tested), or "no trades" with the reason, plus a watchlist of what the system is waiting on |
-| **Playbook** | Every rule's net record on real prices, gross vs net of costs, and the walk-forward record of the playbook itself |
-| **Market** | Implied vs realised vol across all F&O names, event flags, futures positioning |
-| **Name** | One underlying: smile, OI by strike, positioning, every defined-risk structure valued with costs and tail risk |
-| **Book** | Your positions, marked daily at NSE settlement prices, with exit actions and predicted-vs-realised calibration |
-| **How it works** | The method in plain words |
+* **Orders**: what to buy, sell, close or hold tomorrow, one lot each, with the futures
+  contract, reference price, notional, margin, disaster stop and Pragyam's 10-session
+  range, plus Order Flow context (futures build-up, put/call ratios, IV, event flag,
+  delivery %).
+* **Book**: your positions and the full model book, long/short balance, stop proximity.
+* **Name**: why a stock is in the book: its positioning score over time, option-market
+  readings, price with risk levels.
+* **Track record**: 2019 – today, net of costs, for the book size your capital supports.
 
-## Quick start
+## The evidence, briefly (docs/RESEARCH_V6.md)
+
+| Book (1× gross, net of costs, 2019 – Nov 2026) | Sharpe | Return / yr | Worst drawdown |
+|---|---|---|---|
+| model book, ~30 names | ~1.0 | ~9% | −14% |
+| 12 names | 0.89 | 9.0% | −17% |
+| 6 names | 0.55 | 7.7% | −21% |
+
+The signal was designed on 2024–25 and confirmed on 2019–22, which no design choice had
+seen. It was flat in 2023 – mid-2024 and is weak in 2026 so far. Expect losing years.
+
+## Run it
+
+**Streamlit Cloud:** point the app at `app.py`. First load takes about a minute (it
+fetches the latest NSE files and price history); after that it's cached.
+
+**Locally:**
 
 ```bash
 pip install -r requirements.txt
-python -m vaaydo sync        # ~2 years of NSE F&O bhavcopy (~400 MB, ~7 min, once)
-python -m vaaydo research    # builds the evidence from real prices (~15 min, once)
 streamlit run app.py
 ```
 
-Daily, after ~18:00 IST: `python -m vaaydo sync && python -m vaaydo research && python -m vaaydo scan`
-(or click **Sync** in the app). Data is stored in `~/.vaaydo` (override with `VAAYDO_DATA`).
-
-## The findings that shaped it (`docs/RESEARCH.md`)
-
-* **Implied vol was efficient.** Mean realised variance / implied variance = 1.00. The
-  "IV is 9% too high" premium exists only at the median; single-stock jumps pay it back.
-  Out of sample, ATM IV beat every realised-vol forecast tried.
-* **Short premium lost after costs**: stock iron condors −9% of risk per trade (t = −3.4),
-  NIFTY weekly put spreads −10% (t = −3.2). They lost money even before costs.
-* **Futures build-up and option-OI walls did not predict** forward returns or breaches.
-* **Watching:** long straddles on stocks with the cheapest IV (+17% net per trade, t = 1.8).
-  Not yet reliable enough to trade.
+`data/opi_inputs.parquet` ships the score inputs since Jul 2024 so the app starts fast.
+The workflow in `.github/workflows/refresh.yml` appends each evening's session
+(`scripts/refresh_bundle.py`); without it, the app computes missing days itself.
 
 ## Layout
 
 ```
+app.py                  the curator (Streamlit)
 vaaydo/
-  data/bhavcopy.py   NSE F&O bhavcopy: download, slim, cache (UDiFF, Jul 2024+)
-  data/store.py      panels: spot (corporate-action adjusted), lots, futures positioning, chains
-  pricing.py         Black-76 on the futures forward, vectorised implied vol
-  vol.py             smiles from real option prices, fitted smile, realised vol
-  forecast.py        filtered historical simulation (fat tails, centred on the forward)
-  strategies.py      defined-risk structures from liquid listed strikes only
-  costs.py           Indian F&O charges + liquidity-dependent spread model
-  evaluate.py        EV, P(profit), tail loss, max loss (incl. exit) per lot
-  research.py        fixed-rule studies on real prices (the evidence)
-  playbook.py        rules, live/watch status, walk-forward record
-  engine.py          the daily scan
-  portfolio.py       sizing, correlation clusters, NIFTY-gap stress
-  journal.py         your book: positions, daily marks, exit actions, calibration
-  backtest.py        settlement machinery, positioning study
-  flow.py            futures build-up and option OI walls
-app.py               Streamlit dashboard
-docs/                METHOD.md · RESEARCH.md · AUDIT.md (why v4 was replaced)
+  curator.py            prepare (data, scores, model book, levels, context) + personalize (your orders)
+  signal.py             Option Positioning Index, smoothing, model-book and your-book replay
+  features.py           per-stock option/futures features from one day's bhavcopy
+  pragyam.py            Pragyam risk engine (thebullishvalue/Indicator), verbatim
+  session.py            what the live app fetches: recent bhavcopies, build-up, delivery
+  data/                 NSE F&O bhavcopy (UDiFF + legacy), equity bhavcopy, Yahoo history
+  alpha.py · simulate.py · book.py · longtest.py · optexpr.py   the research that chose the signal
+docs/  METHOD.md · RESEARCH_V6.md · PREREGISTRATION.md · RESEARCH.md · AUDIT.md
 ```
 
 ## Credits and terms
 
-The positioning concepts (futures build-up, option-OI walls) follow
-[Order Flow](https://github.com/MrChartist/order-flow) by Mr. Chartist. VAAYDO
-reimplements the ideas in Python and does not include its code or data. NSE data is
-subject to NSE's terms. VAAYDO is a research and decision-support tool, not investment
-advice. Options can lose more than you expect, faster than you expect.
+Risk levels: **Pragyam** (thebullishvalue/Indicator). Positioning concepts: **Order
+Flow** by Mr. Chartist (github.com/MrChartist/order-flow), reimplemented, with no code or
+data copied. NSE data is subject to NSE's terms. This is decision support, not
+investment advice. Futures can lose more than the margin posted.
