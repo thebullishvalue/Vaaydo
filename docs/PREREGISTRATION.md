@@ -124,3 +124,16 @@ Fixed results, 12-name book 2019-2026: no stop 0.69; fixed 1x/1.5x/2x 0.58/0.71/
 trailing 1x/1.5x/2x 0.41/0.66/0.66. Stops add no return; the 1.5x trailing stop was
 chosen for risk behaviour (it follows the price), not for its backtest. Published track
 record regenerated: model book 0.77, 20 names 0.76, 12 names 0.66, 6 names 0.30.
+
+## Option-flow readings (registered 18 Nov 2026, before the book test below)
+Tested on futures outcomes, discovery 2019-22 / validation 2023-24H1 / final 24H2-26:
+buyers-vs-writers opening (contract build-up) weak (abs t <= 2.3, mixed); unusual volume
+sign flips; **call-vs-put volume surge (surge_tilt) negative in all three periods**
+(t at 5 sessions: -3.5 / -4.5 / -2.0), and it held while the score was flat (2023-24H1).
+**Hypothesis (one, fixed now):** combined = rank(score) + 0.5 x rank(-surge_tilt), same
+book rules (5% / 15% hysteresis, trailing 1.5x stop). Adopted only if discovery Sharpe is
+not lower than the score alone AND validation improves.
+**Result: rejected.** Score alone: Sharpe 1.23 / -0.81 / 0.67 (disc / valid / final), 5.7
+trades a day. Score + surge: 0.06 / -1.88 / -0.19, 26.8 trades a day: the daily component
+churns the book and costs take it. Surge, buyers/writers and unusual volume are shown as
+context on every name; none enters the signal.

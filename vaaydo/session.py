@@ -37,7 +37,7 @@ def recent_sessions(n: int = 6, today: date | None = None, max_back: int = 20) -
 
 
 def futures_context(days: list[date]) -> pd.DataFrame:
-    """Order Flow's reading of each future, end of day: 1-day and 5-day build-up."""
+    """The positioning reading of each future, end of day: 1-day and 5-day build-up."""
     from . import flow as F
     fr = bhavcopy.load_range(days, columns=["date", "inst", "symbol", "expiry", "close", "oi", "oi_chg", "spot"],
                              filters=[("inst", "in", ["STF", "IDF"])])

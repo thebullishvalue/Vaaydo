@@ -1,226 +1,281 @@
 """
-The daily curator: from the latest NSE close to tomorrow's order list.
+One run of the screener, for any session since the bundle starts.
 
-    prepare() -> Prepared                   slow, cached: data, scores, Pragyam, prices
-    orders(prep, capital, leverage) -> Orders   fast: your book and your orders (and the model's)
+    run(asof) -> Run        every F&O stock's state and readings, the model book with
+                            leg-by-leg history, closed trades, and the day's option contracts
+    sized(run, capital, leverage) -> (positions, legs)    the same book cut to your capital
 
-Every position comes from `ledger.replay`, the backtest's own rules on real prices: entry
-at the futures open after the signal, a trailing stop, exits on the signal or the stop.
+States, per stock, at the close of `asof`:
+    ▲ NEW / ▼ NEW     the score entered the top / bottom 5% today: enter at the next open
+    LONG / SHORT      held (since the signal date shown)
+    EXIT              leaves the book at the next open (signal left the band, or stop)
+    STOPPED           stopped out; out until its signal leaves the band
+    READY ▲ / ▼       in the 5–15% band and moving toward an entry
+    —                 nothing
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
 
-from . import ledger as LG
-from . import session, signal
+from . import bundle, ledger as LG, session, signal
 from .data import bhavcopy
+from .simulate import futures_cost
 
-WINDOW = 160          # sessions replayed (covers every live position's history)
-MIN_SESSIONS_TO_EXPIRY = 7
+STATE_ORDER = {"▲ NEW": 0, "▼ NEW": 1, "EXIT": 2, "LONG": 3, "SHORT": 4, "STOPPED": 5, "READY ▲": 6, "READY ▼": 7, "—": 8}
 
 
 @dataclass
-class Prepared:
+class Run:
     asof: pd.Timestamp
-    dates: list
-    model: dict                 # {date: {symbol: side}} score membership
-    ext: dict                   # {date: {symbol: |pct - 0.5|}}
+    screen: pd.DataFrame          # one row per F&O stock
+    positions: pd.DataFrame       # one row per open / exiting position (model book)
+    legs: pd.DataFrame            # one row per contract leg of every position shown
+    trades: pd.DataFrame          # closed trades since the bundle start
+    contracts: pd.DataFrame       # the day's option contracts with their flow
     scores: pd.DataFrame
-    closes: pd.DataFrame        # adjusted spot
-    opens: pd.DataFrame
-    ratios: dict                # {(symbol, side): Series} Pragyam stop ratio
-    levels: pd.DataFrame        # today's Pragyam levels per symbol
-    fut: pd.DataFrame           # today's futures (contract to trade per symbol)
-    context: pd.DataFrame
-    margin_rate: float
+    market: object
+    daily: dict
+    ext: dict
+    ratios: dict
+    dates: list
     notes: list = field(default_factory=list)
 
 
-@dataclass
-class Orders:
-    yours: pd.DataFrame
-    model: pd.DataFrame
+def _sessions_up_to(asof: date | None) -> list[date]:
+    """Make sure the six sessions up to `asof` (or the latest) are on disk."""
+    if asof is None:
+        return session.recent_sessions(6)
+    s = __import__("requests").Session()
+    got, d = [], asof
+    while len(got) < 6 and (asof - d).days < 30:
+        if d.weekday() < 5 and bhavcopy.fetch_day(d, s) is not None:
+            got.append(d)
+        d -= timedelta(days=1)
+    return sorted(got)
 
 
-def _calendar():
-    return pd.DatetimeIndex(sorted(pd.Timestamp(d) for d in bhavcopy.available_days()))
+def _bundle_futures(last_needed: pd.Timestamp) -> pd.DataFrame:
+    F = pd.read_parquet(bundle.FUT)
+    F["date"] = pd.to_datetime(F["date"])
+    end = F["date"].max()
+    if last_needed > end:
+        extra = [d for d in bhavcopy.available_days() if end < pd.Timestamp(d) <= last_needed]
+        if extra:
+            F = pd.concat([F, bundle.futures_rows(extra)], ignore_index=True)
+    return F[F["date"] <= last_needed]
 
 
-def _futures_day(d) -> pd.DataFrame:
-    if bhavcopy.fetch_day(pd.Timestamp(d).date()) is None:
-        return pd.DataFrame()
-    f = bhavcopy.load_range([pd.Timestamp(d).date()], columns=["inst", "symbol", "expiry", "open", "close", "lot"],
-                            filters=[("inst", "==", "STF")])
-    f["expiry"] = pd.to_datetime(f["expiry"])
-    return f
+def _bundle_pragyam(symbols, asof: pd.Timestamp) -> pd.DataFrame:
+    P = pd.read_parquet(bundle.PRG)
+    P["date"] = pd.to_datetime(P["date"])
+    if P["date"].max() < asof:                                  # sessions after the bundle: compute them
+        try:
+            newp = bundle.pragyam_rows(sorted(symbols), P["date"].max() + pd.Timedelta(days=1), until=asof)
+            P = pd.concat([P, newp], ignore_index=True)
+        except Exception:
+            pass
+    return P[P["date"] <= asof]
 
 
-def _tradable_contracts(f: pd.DataFrame, asof: pd.Timestamp, cal) -> pd.DataFrame:
-    """Per symbol: the nearest future with more than a week of sessions left."""
-    def left(e):
-        return int(((cal > asof) & (cal <= e)).sum()) if e <= cal[-1] else int(np.busday_count(asof.date(), e.date()))
-    f = f.copy()
-    f["left"] = f["expiry"].map(left)
-    f = f[f["left"] > MIN_SESSIONS_TO_EXPIRY].sort_values("expiry")
-    return f.groupby("symbol").first()
+def _trade_return(p: LG.Position, cost: float) -> float:
+    r = 1.0
+    for l in p.legs:
+        if l.exit_px is None or not np.isfinite(l.exit_px) or not np.isfinite(l.entry_px):
+            return np.nan
+        r *= 1 + p.side * (l.exit_px / (l.entry_px * l.adj) - 1) - cost
+    return r - 1
 
 
-def _fill_from_nse(h: pd.DataFrame, days, names) -> pd.DataFrame:
-    """Add sessions Yahoo has not posted yet from NSE's equity bhavcopy (same exchange
-    prices; scaled to Yahoo's adjusted level by the last common close)."""
-    from .data import equity
-    h = h.copy()
-    h["date"] = pd.to_datetime(h["date"])
-    have = set(zip(h["symbol"], h["date"]))
-    add = []
-    for d in days:
-        e = equity.fetch_day(d)
-        if e is None:
-            continue
-        e = e[e["symbol"].isin(names)]
-        for r in e.itertuples():
-            if (r.symbol, pd.Timestamp(d)) in have:
-                continue
-            prior = h[(h["symbol"] == r.symbol) & (h["date"] < pd.Timestamp(d))].tail(1)
-            k = 1.0
-            if len(prior):
-                pe = equity.fetch_day(prior["date"].iloc[0].date())
-                pc = pe[pe["symbol"] == r.symbol]["close"] if pe is not None else pd.Series(dtype=float)
-                if len(pc) and pc.iloc[0] > 0:
-                    k = prior["close"].iloc[0] / pc.iloc[0]
-            add.append(dict(date=pd.Timestamp(d), symbol=r.symbol, open=r.open * k, high=r.high * k, low=r.low * k,
-                            close=r.close * k, adj=r.close * k, volume=r.qty))
-    if add:
-        h = pd.concat([h, pd.DataFrame(add)], ignore_index=True).sort_values(["symbol", "date"])
-    return h
-
-
-def prepare(margin_rate: float = 0.20, progress=None) -> Prepared:
-    from . import pragyam as PG
-    from .data import history
+def run(asof: date | None = None, progress=None) -> Run:
     notes = []
-    days = session.recent_sessions(6)
-    asof = pd.Timestamp(days[-1])
-    sc = signal.scores(signal.extend_inputs(days, progress=progress))
-    model: dict = {}
-    signal.replay(sc, daily=model)
-    dates = sorted(model)[-WINDOW:]
-    if dates[-1] != asof:
-        notes.append(f"Scores end {dates[-1].date()}; latest session {asof.date()}.")
-    ext = {d: (g.set_index("symbol")["pct"] - 0.5).abs().to_dict() for d, g in sc[sc["date"].isin(dates)].groupby("date")}
-    names = sorted(set().union(*[set(model[d]) for d in dates]))
-    h = history.load(names, until=asof)
-    h = h[h["symbol"].isin(names)]
-    h = _fill_from_nse(h, days, names)
-    closes = h.pivot(index="date", columns="symbol", values="close")
-    opens = h.pivot(index="date", columns="symbol", values="open")
-    ratios, lv = {}, []
-    for s, d in h.groupby("symbol"):
-        d = d.set_index("date").sort_index()[["open", "high", "low", "close"]]
-        d = d[d.index <= asof].iloc[-1100:]
-        if len(d) < 300:
-            continue
-        R = PG.run(d)
-        ratios[(s, 1)] = R["stopL"] / d["close"]
-        ratios[(s, -1)] = R["stopS"] / d["close"]
-        last = R.iloc[-1]
-        c = d["close"].iloc[-1]
-        lv.append(dict(symbol=s, spot_close=c, lo_r=last["lower"] / c, up_r=last["upper"] / c, trend=last["T"],
-                       regime=["calm", "normal", "stressed"][int(last["reg"])] if np.isfinite(last["reg"]) else None))
-    cal = _calendar()
-    fut = _tradable_contracts(_futures_day(asof), asof, cal)
-    context = build_context(asof, days, names)
-    return Prepared(asof, dates, model, ext, sc, closes, opens, ratios, pd.DataFrame(lv).set_index("symbol"),
-                    fut, context, margin_rate, notes)
+    say = progress or (lambda pct, label: None)
+    say(5, "fetching nse files")
+    days = _sessions_up_to(asof)
+    if not days:
+        raise RuntimeError("No NSE F&O file found for that date or the 30 days before it.")
+    A = pd.Timestamp(days[-1])
+    say(25, "scoring positioning")
+    sc = signal.scores(signal.extend_inputs(days))
+    sc = sc[sc["date"] <= A]
+    daily: dict = {}
+    signal.replay(sc, daily=daily)
+    say(45, "replaying the book")
+    F = _bundle_futures(A)
+    M = LG.Market(F)
+    cal = set(M.cal)
+    dates = [d for d in sorted(daily) if d in cal]
+    names = sorted(set(sc["symbol"]))
+    P = _bundle_pragyam(names, A)
+    ratios = {}
+    for s, g in P.groupby("symbol"):
+        g = g.set_index("date")
+        ratios[(s, 1)], ratios[(s, -1)] = g["stopL_r"], g["stopS_r"]
+    led = LG.replay(M, dates, daily, ratios)
+    ext = {d: (g.set_index("symbol")["pct"] - 0.5).abs().to_dict() for d, g in sc.groupby("date")}
 
-
-def _entry_price(sym: str, exec_date, cache: dict) -> tuple[float, object]:
-    """Futures open on the entry session, for the contract that was traded then."""
-    if exec_date is None:
-        return np.nan, None
-    key = pd.Timestamp(exec_date)
-    if key not in cache:
-        cache[key] = _futures_day(key)
-    f = cache[key]
-    if f.empty:
-        return np.nan, None
-    x = f[(f["symbol"] == sym) & (f["expiry"] > key + pd.Timedelta(days=10))].sort_values("expiry")
-    if x.empty:
-        return np.nan, None
-    o = x["open"].iloc[0]
-    return (float(o) if o > 0 else float(x["close"].iloc[0])), x["expiry"].iloc[0].date()
-
-
-def _rows(prep: Prepared, led: LG.Ledger, capital: float) -> pd.DataFrame:
-    asof, fut, lv = prep.asof, prep.fut, prep.levels
-    cache: dict = {}
-    rows = []
-    items = [(s, p, "HOLD" if s in led.prev and led.prev[s].side == p.side else "ENTER", "") for s, p in led.held.items()]
-    items += [(s, p, "EXIT", why) for s, (p, why) in led.exits_today.items()]
-    for s, p, action, why in items:
-        if s not in fut.index:
-            continue
-        c = fut.loc[s]
-        last = float(c["close"])
-        lot = int(c["lot"])
-        spot = prep.closes[s].dropna().iloc[-1] if s in prep.closes else np.nan
-        f2s = last / spot if np.isfinite(spot) and spot > 0 else np.nan
-        stop = p.stop * f2s if (p.stop is not None and np.isfinite(f2s)) else np.nan
-        if action == "ENTER":
-            r = prep.ratios.get((s, p.side))
-            rv = r.iloc[-1] if r is not None and len(r) else np.nan
-            stop = last * (1 + LG.STOP_MULT * (rv - 1)) if np.isfinite(rv) else np.nan
-        entry, entry_contract = _entry_price(s, p.exec, cache) if action != "ENTER" else (np.nan, None)
-        pnl = p.side * (last - entry) * lot if np.isfinite(entry) else np.nan
-        risk = abs(last - stop) * lot if np.isfinite(stop) else np.nan
-        lvl = lv.loc[s] if s in lv.index else None
-        if not why:
-            why = ("new signal: score entered the top 5%" if p.side > 0 else "new signal: score entered the bottom 5%") \
-                if action == "ENTER" and p.signal == asof else (
-                "joins your book: signal since " + f"{p.signal:%d %b}" if action == "ENTER" else f"signal since {p.signal:%d %b}")
-        rows.append(dict(
-            action=action, symbol=s, side="LONG" if p.side > 0 else "SHORT", contract=pd.Timestamp(c["expiry"]).date(),
-            lot=lot, signal_date=p.signal.date(), entry_date=p.exec.date() if p.exec is not None else None,
-            entry_price=entry, entry_contract=entry_contract, last=last, pnl=pnl,
-            pnl_pct=p.side * (last / entry - 1) if np.isfinite(entry) else np.nan,
-            stop=stop, stop_from_last=(stop / last - 1) if np.isfinite(stop) else np.nan,
-            stop_from_entry=(stop / entry - 1) if (np.isfinite(stop) and np.isfinite(entry)) else np.nan,
-            risk_to_stop=risk, risk_pct_capital=risk / capital if np.isfinite(risk) else np.nan,
-            range_lo=last * lvl["lo_r"] if lvl is not None else np.nan, range_hi=last * lvl["up_r"] if lvl is not None else np.nan,
-            notional=last * lot, margin=last * lot * prep.margin_rate, risk_regime=lvl["regime"] if lvl is not None else None,
-            score_pct=float(prep.scores[(prep.scores["date"] == prep.scores["date"].max()) & (prep.scores["symbol"] == s)]["pct"].iloc[0])
-            if ((prep.scores["date"] == prep.scores["date"].max()) & (prep.scores["symbol"] == s)).any() else np.nan,
-            why=why))
-    out = pd.DataFrame(rows)
-    if len(out):
-        out["order"] = out["action"].map({"EXIT": 0, "ENTER": 1, "HOLD": 2})
-        out["extreme"] = (out["score_pct"] - 0.5).abs()
-        out = out.sort_values(["order", "side", "extreme"], ascending=[True, True, False]).drop(columns="order")
-    return out
-
-
-def orders(prep: Prepared, capital: float, leverage: float = 1.0) -> Orders:
-    notional = {s: float(r["close"]) * int(r["lot"]) for s, r in prep.fut.iterrows()}
-    model_led = LG.replay(prep.dates, prep.model, prep.closes, prep.opens, prep.ratios)
-    your_led = LG.replay(prep.dates, prep.model, prep.closes, prep.opens, prep.ratios, ext=prep.ext,
-                         notional=notional, cap=capital * leverage)
-    return Orders(yours=_rows(prep, your_led, capital), model=_rows(prep, model_led, capital))
-
-
-def build_context(asof: pd.Timestamp, days, names) -> pd.DataFrame:
-    """Order Flow's reading for the names: positioning, options, delivery."""
+    say(70, "reading option flow")
+    # ── per-stock screen ──
+    last = sc[sc["date"] == A].set_index("symbol")
+    earlier = sorted(sc.loc[sc["date"] < A, "date"].unique())
+    prev5 = sc[sc["date"] == earlier[-5]].set_index("symbol")["pct"] if len(earlier) >= 5 else pd.Series(dtype=float)
+    plast = P[P["date"] == P["date"].max()].set_index("symbol")
     from .features import day_features
-    f = day_features(asof.date())
-    f = f[f["symbol"].isin(names)][["symbol", "atm_iv", "skew", "cskew", "cpiv", "pcr_vol", "pcr_oi", "put_oi_flow",
-                                    "call_oi_flow", "term", "max_pain_d", "wall_put_d", "wall_call_d", "basis", "fwd"]]
-    fc = session.futures_context(days)
-    dl = session.delivery(asof.date())
-    ctx = f.merge(fc, on="symbol", how="left").merge(dl, on="symbol", how="left")
-    ctx["event"] = ctx["term"] > 1.08
-    ctx["wall_put"] = ctx["fwd"] * np.exp(ctx["wall_put_d"])
-    ctx["wall_call"] = ctx["fwd"] * np.exp(ctx["wall_call_d"])
-    return ctx
+    from . import flowscan as FS
+    feats = day_features(A.date()).set_index("symbol")
+    try:
+        prev_day = [d for d in bhavcopy.available_days() if d < A.date()][-1]
+        cf = FS.contract_flow(FS._load(A.date(), False), FS._load(prev_day, False))
+        uf = FS.underlying_flow(cf).set_index("symbol")
+    except Exception as e:
+        cf, uf = pd.DataFrame(), pd.DataFrame()
+        notes.append(f"Option flow unavailable: {e}")
+    fc = session.futures_context(days).set_index("symbol")
+    dl = session.delivery(A.date()).set_index("symbol")
+    try:
+        sect = pd.read_parquet(bundle.SECT).set_index("symbol")
+    except Exception:
+        sect = pd.DataFrame(columns=["name", "industry"])
+
+    def g(row, key):
+        try:
+            v = row.get(key, np.nan)
+            return float(v)
+        except (TypeError, ValueError):
+            return np.nan
+
+    rows = []
+    exiting = {p.symbol for p, _, d in led.closed if d == A}
+    for s in sorted(set(last.index) | set(led.held) | exiting):
+        pct = g(last.loc[s], "pct") if s in last.index else np.nan
+        d5 = pct - float(prev5[s]) if s in prev5.index and np.isfinite(pct) else np.nan
+        dec = led.decisions.get(s, (None, ""))
+        p = led.held.get(s)
+        if dec[0] == "ENTER":
+            state = "▲ NEW" if p.side > 0 else "▼ NEW"
+        elif dec[0] == "EXIT":
+            state = "EXIT"
+        elif p is not None:
+            state = "LONG" if p.side > 0 else "SHORT"
+        elif s in led.banned:
+            state = "STOPPED"
+        elif np.isfinite(pct) and 1 - signal.STAY < pct <= 1 - signal.ENTER and np.isfinite(d5) and d5 > 0:
+            state = "READY ▲"
+        elif np.isfinite(pct) and signal.ENTER < pct <= signal.STAY and np.isfinite(d5) and d5 < 0:
+            state = "READY ▼"
+        else:
+            state = "—"
+        fe = feats.loc[s] if s in feats.index else pd.Series(dtype=float)
+        u = uf.loc[s] if len(uf) and s in uf.index else pd.Series(dtype=float)
+        c = fc.loc[s] if s in fc.index else pd.Series(dtype=float)
+        pr = plast.loc[s] if s in plast.index else pd.Series(dtype=float)
+        dv = dl.loc[s] if s in dl.index else pd.Series(dtype=float)
+        fwd = g(fe, "fwd")
+        reg = g(pr, "reg")
+        rows.append(dict(
+            symbol=s, name=sect["name"].get(s, "") if len(sect) else "", industry=sect["industry"].get(s, "—") if len(sect) else "—",
+            state=state, why=dec[1], score=pct, score_chg5=d5, opi_today=g(last.loc[s], "opi_pct") if s in last.index else np.nan,
+            to_entry=(1 - signal.ENTER - pct) if np.isfinite(pct) and pct >= 0.5 else ((pct - signal.ENTER) if np.isfinite(pct) else np.nan),
+            spot=g(fe, "spot"), fut=g(fe, "fut_close"), atm_iv=g(fe, "atm_iv"), pcr_vol=g(fe, "pcr_vol"), pcr_oi=g(fe, "pcr_oi"),
+            skew=g(fe, "skew"), cskew=g(fe, "cskew"), cpiv=g(fe, "cpiv"), term=g(fe, "term"),
+            event=bool(np.isfinite(g(fe, "term")) and g(fe, "term") > 1.08),
+            wall_put=fwd * np.exp(g(fe, "wall_put_d")), wall_call=fwd * np.exp(g(fe, "wall_call_d")),
+            max_pain=fwd * np.exp(g(fe, "max_pain_d")), basis=g(fe, "basis"),
+            fut_ret1=g(c, "fut_ret1"), fut_oi1=g(c, "fut_oi1"), fut_ret5=g(c, "fut_ret5"), fut_oi5=g(c, "fut_oi5"),
+            build1=c.get("build1", None), build5=c.get("build5", None),
+            buyer_tilt=g(u, "buyer_tilt"), writer_tilt=g(u, "writer_tilt"), unusual_tilt=g(u, "unusual_tilt"), surge_tilt=g(u, "surge_tilt"),
+            deliv_pct=g(dv, "deliv_pct"), risk_regime={0: "calm", 1: "normal", 2: "stressed"}.get(int(reg)) if np.isfinite(reg) else None,
+            trend=g(pr, "trend"), range_lo_r=g(pr, "lo_r"), range_hi_r=g(pr, "up_r")))
+    screen = pd.DataFrame(rows)
+    screen["o"] = screen["state"].map(STATE_ORDER)
+    screen = screen.sort_values(["o", "score"], ascending=[True, False]).drop(columns="o").reset_index(drop=True)
+
+    say(90, "assembling the screen")
+    positions, legs = _positions(M, led, A, screen)
+    cost = futures_cost()
+    trades = []
+    for p, why, d in led.closed:
+        if d >= A or not p.legs or p.legs[-1].exit_date is None:
+            continue
+        trades.append(dict(symbol=p.symbol, side="LONG" if p.side > 0 else "SHORT", signal=p.signal.date(),
+                           entry=p.legs[0].entry_date.date(), entry_px=p.legs[0].entry_px,
+                           exit=p.legs[-1].exit_date.date(), exit_px=p.legs[-1].exit_px, legs=len(p.legs), why=why,
+                           sessions=int(((M.cal >= p.legs[0].entry_date) & (M.cal <= p.legs[-1].exit_date)).sum()),
+                           ret=_trade_return(p, cost)))
+    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ext, ratios, dates, notes)
+
+
+def _positions(M, led, A, screen: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    scr = screen.set_index("symbol")
+    rows, legrows = [], []
+    items = [(s, p, "ENTER" if led.decisions.get(s, ("",))[0] == "ENTER" else "HOLD", "") for s, p in led.held.items()]
+    items += [(p.symbol, p, "EXIT", why) for p, why, d in led.closed if d == A]
+    for s, p, action, why in items:
+        if action == "ENTER":
+            contract = M.fill_contract.get((A, s), M.active.get((A, s)))
+            last = M.px(A, s, contract) if contract is not None else np.nan
+            lot = int(M.lot.get((A, s, contract), 0) or 0) if contract is not None else 0
+            stop = last * p.k if (p.k and np.isfinite(last)) else np.nan     # from today's close
+            entry_px, entry_date, realised, open_pnl, total, pnl_pct = np.nan, None, np.nan, np.nan, np.nan, np.nan
+        else:
+            leg = p.leg
+            contract, lot = leg.contract, leg.lot
+            last = M.px(A, s, leg.contract)
+            stop = p.stop if p.stop is not None else np.nan
+            entry_px, entry_date = p.legs[0].entry_px * p.legs[0].adj, p.legs[0].entry_date
+            realised = p.realised()
+            open_pnl = p.side * (last - leg.entry_px * leg.adj) * lot if np.isfinite(last) else np.nan
+            total = realised + (open_pnl if np.isfinite(open_pnl) else 0.0)
+            # compounded return across legs, the backtest's own measure (before charges)
+            g = 1.0
+            for i, l in enumerate(p.legs):
+                xp = l.exit_px if l.exit_px is not None else last
+                if xp is None or not np.isfinite(xp):
+                    g = np.nan
+                    break
+                g *= 1 + p.side * (xp / (l.entry_px * l.adj) - 1)
+            pnl_pct = g - 1
+            for i, l in enumerate(p.legs):
+                xp = l.exit_px if l.exit_px is not None else None
+                legrows.append(dict(symbol=s, side="LONG" if p.side > 0 else "SHORT", leg=i + 1, contract=l.contract.date(),
+                                    entry_date=l.entry_date.date(), entry_px=l.entry_px * l.adj, lot=l.lot,
+                                    exit_date=l.exit_date.date() if l.exit_date is not None else None, exit_px=xp,
+                                    status=l.exit_why or ("open" if i == len(p.legs) - 1 else ""),
+                                    pnl=p.side * ((xp if xp is not None else last) - l.entry_px * l.adj) * l.lot,
+                                    adjusted=l.adj != 1.0))
+        sr = scr.loc[s] if s in scr.index else pd.Series(dtype=float)
+        risk = abs(last - stop) * lot if (np.isfinite(stop) and np.isfinite(last)) else np.nan
+        rows.append(dict(
+            action=action, symbol=s, side="LONG" if p.side > 0 else "SHORT", signal=p.signal.date(),
+            contract=pd.Timestamp(contract).date() if contract is not None else None, lot=lot, legs=max(len(p.legs), 1),
+            entry_date=entry_date.date() if entry_date is not None else None, entry_px=entry_px, last=last,
+            realised=realised, open_pnl=open_pnl, pnl=total, pnl_pct=pnl_pct,
+            stop=stop, stop_from_last=(stop / last - 1) if np.isfinite(stop) and np.isfinite(last) and last else np.nan,
+            risk_to_stop=risk, range_lo=last * sr.get("range_lo_r", np.nan), range_hi=last * sr.get("range_hi_r", np.nan),
+            notional=last * lot if np.isfinite(last) else np.nan, why=why or (sr.get("why") or ""),
+            industry=sr.get("industry", "—"), score=sr.get("score", np.nan)))
+    pos = pd.DataFrame(rows)
+    if len(pos):
+        pos["o"] = pos["action"].map({"EXIT": 0, "ENTER": 1, "HOLD": 2})
+        pos = pos.sort_values(["o", "side", "symbol"]).drop(columns="o").reset_index(drop=True)
+    return pos, pd.DataFrame(legrows)
+
+
+def sized(r: Run, capital: float, leverage: float = 1.0, universe: frozenset | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The model book cut to your capital (and universe): the same ledger rules,
+    capital-limited. The signal stays cross-sectional over every F&O stock; the universe
+    only limits which of those names you trade."""
+    A = r.asof
+    daily = r.daily if universe is None else {d: {s: v for s, v in m.items() if s in universe} for d, m in r.daily.items()}
+    notional = {}
+    for s in set(r.screen["symbol"]):
+        e = r.market.active.get((A, s))
+        if e is not None:
+            c, lot = r.market.px(A, s, e), r.market.lot.get((A, s, e), 0)
+            if np.isfinite(c) and lot:
+                notional[s] = c * lot
+    led = LG.replay(r.market, r.dates, daily, r.ratios, ext=r.ext, notional=notional, cap=capital * leverage)
+    return _positions(r.market, led, A, r.screen)

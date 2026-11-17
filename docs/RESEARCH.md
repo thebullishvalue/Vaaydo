@@ -77,7 +77,7 @@ judged on earlier cycles only.
   rules tested, a couple of t ≈ 1.8 results are expected by chance. They become tradable
   only if the record holds up as new cycles arrive.
 
-## 5. Positioning (the Order Flow concepts) (`backtest.flow_study`)
+## 5. Positioning (futures build-up, OI walls) (`backtest.flow_study`)
 
 Futures build-up over 5 days (long build-up, short build-up, short covering, long
 unwinding, neutral) against forward 5- and 20-day returns relative to the day's average

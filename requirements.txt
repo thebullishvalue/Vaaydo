@@ -4,5 +4,6 @@ pyarrow>=15
 scipy>=1.11
 requests>=2.31
 yfinance>=0.2.40
-streamlit>=1.36
+streamlit==1.52.2
+starlette>=0.46.0,<1.0.0
 plotly>=5.20

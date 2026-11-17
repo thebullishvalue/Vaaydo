@@ -1,8 +1,6 @@
 """
 Positioning: who is opening and closing, read from futures price + open interest and
-from the option chain's open interest. These are the concepts the Order Flow board
-(github.com/MrChartist/order-flow) shows live; here they are computed end-of-day over
-history so their predictive value can be *measured* (see `backtest.flow_study`) before
+from the option chain's open interest, computed end-of-day over history so their predictive value can be *measured* (see `backtest.flow_study`) before
 the system is allowed to act on them.
 
     price up,   OI up    long build-up        price down, OI up    short build-up

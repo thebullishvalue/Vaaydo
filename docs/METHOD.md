@@ -57,14 +57,14 @@ per trade in every period, because two option spreads in and out cost more than 
 edge. Futures cost about 0.13% round trip. Credit spreads, condors and straddles lost
 money even unconditionally (docs/RESEARCH.md).
 
-## What Pragyam and Order Flow contribute
+## What Pragyam and the positioning readings contribute
 
 * **Pragyam** (thebullishvalue/Indicator) supplies the risk: its calibrated stop sets
   each trade's disaster stop, and its 80% 10-session cone is shown on every order.
   Pragyam's own research found price charts don't forecast direction, and VAAYDO's tests
   agree: every price-only signal (trend, momentum, reversal, Pragyam's surprise and
   trend tapes) was null cross-sectionally.
-* **Order Flow** (MrChartist/order-flow) supplies the reading of positioning: futures
+* **Positioning readings** supply the context: futures
   build-up, option-OI walls, put/call ratios. Shown on every order as context. Futures
   build-up and OI walls alone did not predict returns; the option-chain readings did.
 

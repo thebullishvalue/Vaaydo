@@ -111,3 +111,19 @@ def report(fe: pd.DataFrame, T: pd.DataFrame, H=10) -> dict:
     by_year["t"] = [A._nw_t(pair[pair.index.year == y].to_numpy(), H) for y in by_year.index]
     out["by_year"] = by_year
     return out
+
+
+def corporate_action_factors_legacy(fut_path: str) -> dict:
+    """{(date, symbol): f} for the pre-UDiFF archive (no lot sizes there): f = raw futures
+    return / Yahoo adjusted return on days they disagree by more than 15%."""
+    F = pd.read_parquet(fut_path)
+    F["date"] = pd.to_datetime(F["date"])
+    F = F.sort_values(["symbol", "expiry", "date"])
+    F["r"] = np.log(F["close"] / F.groupby(["symbol", "expiry"])["close"].shift(1))
+    near = F.dropna(subset=["r"]).sort_values("expiry").groupby(["symbol", "date"]).first()["r"]
+    h = history.load()
+    C = h.pivot(index="date", columns="symbol", values="close")
+    ra = np.log(C / C.shift(1)).stack().rename("ra")
+    j = near.to_frame().join(ra, how="left")
+    bad = j[(j["r"] - j["ra"]).abs() > 0.15]
+    return {(d, s): float(np.exp(r - a)) for (s, d), r, a in zip(bad.index, bad["r"], bad["ra"])}

@@ -4,40 +4,83 @@ import pandas as pd
 from vaaydo import ledger as LG
 
 
-def _setup(path, side=1):
-    dates = list(pd.bdate_range("2026-01-01", periods=len(path)))
-    closes = pd.DataFrame({"X": path}, index=dates)
-    opens = closes.shift(1).fillna(closes.iloc[0])          # open = previous close
-    model = {d: {"X": side} for d in dates}
-    ratios = {("X", 1): pd.Series(0.9, index=dates), ("X", -1): pd.Series(1.1, index=dates)}  # 10% Pragyam stop
-    return dates, model, closes, opens, ratios
+def _market(paths: dict, expiries=("2026-03-26",), lots=None, ca=None, start="2026-01-01"):
+    """paths: {expiry: [closes...]} one symbol X; open = previous close."""
+    n = len(next(iter(paths.values())))
+    days = list(pd.bdate_range(start, periods=n))
+    rows = []
+    for e, closes in paths.items():
+        for i, d in enumerate(days):
+            c = closes[i]
+            if c is None:
+                continue
+            o = closes[i - 1] if i and closes[i - 1] is not None else c
+            rows.append(dict(date=d, symbol="X", expiry=pd.Timestamp(e), open=o, close=c,
+                             lot=(lots or {}).get((e, i), 10)))
+    return LG.Market(pd.DataFrame(rows), ca=ca), days
 
 
-def test_entry_is_next_open_and_stop_trails():
-    dates, model, closes, opens, ratios = _setup([100, 100, 110, 120, 125, 124])
-    led = LG.replay(dates, model, closes, opens, ratios)
+def _ratios(days, r=0.9):
+    return {("X", 1): pd.Series(r, index=days), ("X", -1): pd.Series(2 - r, index=days)}
+
+
+def test_entry_next_open_and_trailing_stop():
+    M, days = _market({"2026-03-26": [100, 100, 110, 120, 125, 124]})
+    led = LG.replay(M, days, {d: {"X": 1} for d in days}, _ratios(days))
     p = led.held["X"]
-    assert p.signal == dates[0] and p.exec == dates[1]       # signal at close d0, filled at d1's open
-    assert p.best == 125                                      # trailed up with the best close
-    assert np.isclose(p.stop, 125 * (1 + 1.5 * (0.9 - 1)))    # 1.5x the 10% distance below the best
+    assert p.signal == days[0] and p.legs[0].entry_date == days[1] and p.legs[0].entry_px == 100
+    assert p.best == 125 and np.isclose(p.stop, 125 * (1 + 1.5 * (0.9 - 1)))
 
 
-def test_stop_decided_on_close_no_lookahead_and_ban():
-    # rises to 120, then closes at 95: below the trailing stop (120 x 0.85 = 102)
-    dates, model, closes, opens, ratios = _setup([100, 100, 120, 95, 96, 97])
-    out = []
-    for i in range(2, len(dates) + 1):
-        led = LG.replay(dates[:i], model, closes, opens, ratios)
-        out.append(("X" in led.held, "X" in led.exits_today))
-    # the stop is only known at the close of day 3 (index 3) -> exit decided that day, not earlier
-    assert out[0] == (True, False) and out[1] == (True, False)
-    assert out[2] == (False, True)
-    # banned while the signal stays on: no re-entry on later days
-    assert out[3] == (False, False) and out[4] == (False, False)
+def test_stop_decided_on_close_exit_next_open_then_ban():
+    M, days = _market({"2026-03-26": [100, 100, 120, 95, 96, 97]})
+    model = {d: {"X": 1} for d in days}
+    led = LG.replay(M, days[:3], model, _ratios(days))
+    assert "X" in led.held                                    # 120: not stopped
+    led = LG.replay(M, days[:4], model, _ratios(days))
+    assert led.decisions["X"][0] == "EXIT" and "stop" in led.decisions["X"][1]   # known at the close of day 3
+    led = LG.replay(M, days, model, _ratios(days))
+    assert "X" not in led.held and led.banned.get("X") == 1  # stays out while the signal is on
+    p = [p for p, why, d in led.closed if p.symbol == "X"][0]
+    assert p.legs[-1].exit_date == days[4] and p.legs[-1].exit_px == 95   # filled at the next open
 
 
 def test_ban_lifts_when_signal_resets():
-    dates, model, closes, opens, ratios = _setup([100, 100, 120, 95, 96, 97, 98, 99])
-    model[dates[5]] = {}                                      # signal leaves the band
-    led = LG.replay(dates, model, closes, opens, ratios)
-    assert "X" in led.held and led.held["X"].signal == dates[6]   # a new signal is a new trade
+    M, days = _market({"2026-03-26": [100, 100, 120, 95, 96, 97, 98, 99]})
+    model = {d: {"X": 1} for d in days}
+    model[days[5]] = {}
+    led = LG.replay(M, days, model, _ratios(days))
+    assert "X" in led.held and led.held["X"].signal == days[6]
+
+
+def test_roll_keeps_each_legs_lot_and_rescales_the_stop():
+    # near contract expires on day 6; the next carries a bigger lot (an NSE revision)
+    near, far = "2026-01-09", "2026-02-26"
+    closes_near = [100, 100, 101, 102, 103, 104, 105]
+    closes_far = [101, 101, 102, 103, 104, 105, 106]
+    lots = {(far, i): 20 for i in range(7)}
+    M, days = _market({near: closes_near, far: closes_far}, lots=lots, start="2026-01-01")
+    led = LG.replay(M, days, {d: {"X": 1} for d in days}, _ratios(days))
+    p = led.held["X"]
+    assert [str(l.contract.date()) for l in p.legs] == [near, far]
+    assert p.legs[0].lot == 10 and p.legs[1].lot == 20
+    assert p.legs[0].exit_why == "rolled" and p.legs[0].exit_date == p.legs[1].entry_date
+
+
+def test_corporate_action_rescales_entry_and_keeps_pnl_continuous():
+    # 1:2 split on day 3: price halves, lot doubles on the same contract
+    M, days = _market({"2026-03-26": [200, 200, 202, 101, 102]},
+                      lots={("2026-03-26", i): (10 if i < 3 else 20) for i in range(5)})
+    led = LG.replay(M, days, {d: {"X": 1} for d in days}, _ratios(days, 0.5))
+    leg = led.held["X"].leg
+    assert np.isclose(leg.adj, 0.5) and leg.lot == 20
+    assert np.isclose(leg.pnl(1, last=102), (102 - 100) * 20)   # entry 200 x 10 == 100 x 20
+
+
+def test_contracts_tradable_at_the_latest_date():
+    days = pd.bdate_range("2026-11-02", "2026-11-17")
+    rows = [dict(date=d, symbol="X", expiry=e, open=100.0, close=100.0, lot=10)
+            for d in days for e in (pd.Timestamp("2026-11-24"), pd.Timestamp("2026-12-29"))]
+    M = LG.Market(pd.DataFrame(rows))
+    assert M.active[(days[-1], "X")] == pd.Timestamp("2026-11-24")     # 5 sessions left > 3
+    assert M.fill_contract[(days[-1], "X")] == pd.Timestamp("2026-11-24")

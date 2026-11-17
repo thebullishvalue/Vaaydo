@@ -50,7 +50,7 @@ FEATURES = {
     "d_basis5": ("5-day change in basis", "futures"),
     "fut_oi_flow": ("futures OI change today, %", "futures"),
     "oi5": ("futures OI change over 5 days, %", "futures"),
-    "buildup": ("sign(5d move) x 5d OI change (Order Flow build-up)", "futures"),
+    "buildup": ("sign(5d move) x 5d OI change (futures build-up)", "futures"),
     "roll_share": ("share of futures OI beyond the near month", "futures"),
     "turn_z": ("log futures turnover vs its 20-day mean", "futures"),
     # equity
@@ -160,7 +160,7 @@ def panel(run_pragyam: bool = True) -> pd.DataFrame:
     eq = equity_block()
     P = fno.merge(px, on=["date", "symbol"], how="left").merge(eq, on=["date", "symbol"], how="left")
     P["iv_rv"] = P["atm_iv"] / P["rv20"]
-    # Order Flow build-up as a number: direction of the 5-day move, scaled by OI opened with it
+    # futures build-up as a number: direction of the 5-day move, scaled by OI opened with it
     P["buildup"] = np.sign(P["rev5"]) * P["oi5"]
     P = P[~P["symbol"].isin(INDICES)]
     return P

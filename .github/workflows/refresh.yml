@@ -1,4 +1,4 @@
-name: Refresh score inputs
+name: Refresh data bundle
 on:
   schedule:
     - cron: "17 14 * * 1-5"   # 19:47 IST, after NSE publishes the bhavcopy
@@ -21,6 +21,6 @@ jobs:
         run: |
           git config user.name "vaaydo-bot"
           git config user.email "vaaydo-bot@users.noreply.github.com"
-          git add data/opi_inputs.parquet
-          git diff --cached --quiet || git commit -m "data: score inputs through $(date +%F)"
+          git add data/*.parquet
+          git diff --cached --quiet || git commit -m "data: bundle through $(date +%F)"
           git push
