@@ -9,10 +9,10 @@ futures orders, sized to your capital, with a stop and a reason for each.
 
 ## What you get each evening
 
-* **Orders**: what to buy, sell, close or hold tomorrow, one lot each, with the futures
-  contract, reference price, notional, margin, disaster stop and Pragyam's 10-session
-  range, plus Order Flow context (futures build-up, put/call ratios, IV, event flag,
-  delivery %).
+* **Orders**: an order blotter of what to buy, sell, close or hold at tomorrow's open,
+  one lot each: futures contract, entry date and price, last, P&L, trailing stop and its
+  distance, risk to stop as % of capital, Pragyam's 10-session range and margin, plus
+  Order Flow context (put/call ratios, IV and skew, futures build-up, delivery %).
 * **Book**: your positions and the full model book, long/short balance, stop proximity.
 * **Name**: why a stock is in the book: its positioning score over time, option-market
   readings, price with risk levels.
@@ -20,11 +20,14 @@ futures orders, sized to your capital, with a stop and a reason for each.
 
 ## The evidence, briefly (docs/RESEARCH_V6.md)
 
-| Book (1× gross, net of costs, 2019 – Nov 2026) | Sharpe | Return / yr | Worst drawdown |
-|---|---|---|---|
-| model book, ~30 names | ~1.0 | ~9% | −14% |
-| 12 names | 0.89 | 9.0% | −17% |
-| 6 names | 0.55 | 7.7% | −21% |
+| Book (1× gross, net of costs, 2019 – Nov 2026) | Sharpe | Return / yr | Volatility | Worst drawdown |
+|---|---|---|---|---|
+| model book, ~30 names | 0.77 | 5.8% | 7.6% | −13.5% |
+| 20 names | 0.76 | 6.6% | 8.7% | −13.0% |
+| 12 names | 0.66 | 7.0% | 10.6% | −18.9% |
+| 6 names | 0.30 | 4.5% | 15.1% | −25.9% |
+
+A modest, market-neutral edge. Below ~12 names it is mostly stock-specific noise.
 
 The signal was designed on 2024–25 and confirmed on 2019–22, which no design choice had
 seen. It was flat in 2023 – mid-2024 and is weak in 2026 so far. Expect losing years.
@@ -50,7 +53,8 @@ The workflow in `.github/workflows/refresh.yml` appends each evening's session
 ```
 app.py                  the curator (Streamlit)
 vaaydo/
-  curator.py            prepare (data, scores, model book, levels, context) + personalize (your orders)
+  curator.py            prepare (data, scores, Pragyam, prices, context) + orders (your book and the model's)
+  ledger.py             the backtest's trading rules replayed on real prices: entries, trailing stops, bans
   signal.py             Option Positioning Index, smoothing, model-book and your-book replay
   features.py           per-stock option/futures features from one day's bhavcopy
   pragyam.py            Pragyam risk engine (thebullishvalue/Indicator), verbatim

@@ -114,3 +114,13 @@ side, next-open execution, roll 3 sessions before expiry, disaster stop 2x Pragy
 0.126% round trip per name charged on entries, exits and rolls.
 Discovery: Sharpe 0.88, every year positive (0.99, 0.70, 1.17, 0.73), 8.6 trades/day.
 **Validation pass:** Sharpe > 0.5 net and positive in 2023 and in 2024 H1.
+
+## Correction: stop look-ahead (18 Nov 2026)
+`book.simulate` checked a stop against the close of day t+1 but exited at the open of t+1,
+before that close was known. All stop variants were inflated, tight ones most (a 1x
+trailing stop showed Sharpe 2.45). Fixed: stops are decided on the close of d and
+executed at the next open; a stopped name is barred until its signal leaves the band.
+Fixed results, 12-name book 2019-2026: no stop 0.69; fixed 1x/1.5x/2x 0.58/0.71/0.65;
+trailing 1x/1.5x/2x 0.41/0.66/0.66. Stops add no return; the 1.5x trailing stop was
+chosen for risk behaviour (it follows the price), not for its backtest. Published track
+record regenerated: model book 0.77, 20 names 0.76, 12 names 0.66, 6 names 0.30.

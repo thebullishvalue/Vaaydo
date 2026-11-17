@@ -36,9 +36,14 @@ cross-sectionally demeaned, vol-scaled. Daily rank IC, Newey-West t.
 * **Option positioning predicts the cross-section of F&O stock futures returns.** Its
   composition was chosen on 2024-25; on 2019-22 (unseen) its IC had t ≈ 5. The sign held
   in every period; the strength did not (≈0 in 2023 – mid-2024).
-* **Implemented as a smoothed, hysteresis futures book** it earned, 2019 – Nov 2026, net:
-  model book (~30 names) Sharpe ≈ 1.0; 12 names Sharpe 0.89, 9.0%/yr, worst drawdown
-  -17%; 6 names Sharpe 0.55, worst drawdown -21%.
+* **Implemented as a smoothed, hysteresis futures book** with a 1.5x trailing stop it
+  earned, 2019 – Nov 2026, net: model book (~30 names) Sharpe 0.77, 5.8%/yr, worst
+  drawdown -13.5%; 20 names 0.76; 12 names 0.66, 7.0%/yr, -18.9%; 6 names 0.30, -25.9%.
+* **Correction (18 Nov 2026).** Earlier versions of these figures (Sharpe ~1.0 / 0.89 /
+  0.55) came from a simulator that decided a stop on a day's close but exited at that
+  same day's open: look-ahead. Fixed in `book.simulate` (stop decided on the close of d,
+  exit at the next open), with a regression test in tests/test_ledger.py. Every figure
+  above is from the fixed simulator.
 * **Not found:** any edge from price charts (Pragyam's and Sanket's own findings,
   re-confirmed cross-sectionally), futures build-up, OI walls, max pain, basis (after
   carry), volatility risk premium, or any option-selling structure (docs/RESEARCH.md).

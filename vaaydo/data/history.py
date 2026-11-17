@@ -54,14 +54,24 @@ def download(symbols: list[str], period: str = "10y", chunk: int = 60) -> pd.Dat
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def load(symbols: list[str] | None = None, refresh: bool = False) -> pd.DataFrame:
+def load(symbols: list[str] | None = None, refresh: bool = False, until=None) -> pd.DataFrame:
+    """Cached daily history. `until`: the latest session needed; a cache that ends before it
+    is refreshed (so a long-lived container never runs stops on stale prices)."""
     p = _path()
     if p.exists() and not refresh:
         h = pd.read_parquet(p)
+        h["date"] = pd.to_datetime(h["date"])
+        # Yahoo usually posts a session's bar hours after NSE: tolerate one session of lag
+        # (the curator fills it from NSE's own equity bhavcopy) and refresh beyond that.
+        stale = until is not None and h["date"].max() < pd.Timestamp(until) - pd.offsets.BDay(1)
         missing = [s for s in (symbols or []) if s not in set(h["symbol"])]
-        if not missing:
+        if stale:
+            want = sorted(set(symbols or []) | set(h["symbol"]) if symbols else set(h["symbol"]))
+            h = pd.concat([h, download(want, period="1y")], ignore_index=True)
+        elif missing:
+            h = pd.concat([h, download(missing)], ignore_index=True)
+        else:
             return h
-        h = pd.concat([h, download(missing)], ignore_index=True)
     else:
         h = download(symbols or [])
     h["date"] = pd.to_datetime(h["date"]).dt.tz_localize(None).dt.normalize()

@@ -37,9 +37,13 @@ the noise, which also cuts trading by 5×.
   different thresholds stops the book churning on small wiggles.)
 * **One lot per name**, futures contract at least a week from expiry, rolled 3 sessions
   before expiry. Stock futures are physically settled, so nothing is held into expiry.
-* **Disaster stop** at twice Pragyam's stop distance (Pragyam's stop is touched 20% of
-  the time within 10 sessions; twice that is rarely touched). Tighter stops were tested
-  and cut returns: this trade needs room.
+* **Entry at the next session's open** after the signal (the blotter shows that price).
+* **Trailing stop**: 1.5× Pragyam's 20%-touch stop distance below the best close since
+  entry (above it for shorts), checked on each close, exit at the next open. Typically
+  5–20% from the last price, set by each stock's volatility. A stopped-out name stays out
+  until its signal leaves the band. Stops were tested from none to tight trailing: none
+  added return (Sharpe 0.58–0.72 for every sensible variant; tight trailing stops hurt),
+  so the stop is there for risk control, and trailing keeps it close to the price.
 * **Your book** is the subset that fits your capital: names you hold stay while they are
   in the model book; freed capital goes to the most extreme new names, alternating to
   keep long and short notional equal. The app replays this every day, so your orders are
@@ -66,7 +70,8 @@ money even unconditionally (docs/RESEARCH.md).
 
 ## What to expect
 
-Backtest 2019 – Nov 2026, net of costs, at 1× gross exposure: about 8–9% a year with
-8–10% volatility for 12–30 names, worst drawdown 13–17%, one or two losing years. It
-was flat in 2023 – mid-2024 and weak in 2026 so far. Plan for a live Sharpe of 0.5–0.8,
-and pause if the book loses more than 1.5× its worst backtest drawdown.
+Backtest 2019 – Nov 2026, net of costs, at 1× gross exposure: 6–7% a year with 8–11%
+volatility for 12–30 names (Sharpe 0.66–0.77), worst drawdown 13–19%, two losing years.
+A 6-name book is mostly noise (Sharpe 0.30). It was flat in 2023 – mid-2024 and weak in
+2026 so far. Plan for a live Sharpe of 0.4–0.6, and pause if the book loses more than
+1.5× its worst backtest drawdown.

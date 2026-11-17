@@ -48,7 +48,8 @@ class Prices:
 
 
 def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, stops: pd.DataFrame | None = None,
-             stop_mult=2.0, start=None, end=None, membership: dict | None = None) -> pd.DataFrame:
+             stop_mult=2.0, start=None, end=None, membership: dict | None = None, trail: bool = False,
+             ban_after_stop: bool = True) -> pd.DataFrame:
     """scores: date, symbol, score (higher = long). Returns a daily frame of book returns."""
     cost = futures_cost() if cost is None else cost
     half = cost / 2
@@ -61,6 +62,7 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
         stp = stops.set_index(["date", "symbol"])[["stopL", "stopS"]]
     cal = [d for d in P.cal if (start is None or d >= pd.Timestamp(start)) and (end is None or d <= pd.Timestamp(end))]
     book = {}       # symbol -> dict(side, expiry, ref, stop)
+    banned = {}     # stopped-out names: no re-entry on that side until the signal leaves the band
     rows = []
     for k in range(len(cal) - 1):
         d, nxt = cal[k], cal[k + 1]
@@ -78,6 +80,9 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                     want[s] = -1
         else:
             want = {s: v["side"] for s, v in book.items()}
+        if ban_after_stop:
+            banned = {s: sd for s, sd in banned.items() if want.get(s) == sd}
+            want = {s: sd for s, sd in want.items() if banned.get(s) != sd or s in book}
         # 2) execute at open nxt; P&L for the day nxt
         pnl = {1: [], -1: []}
         trades = 0.0
@@ -88,10 +93,16 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
             if held is not None:
                 e = held["expiry"]
                 o, c_prev, c_now = P.px(nxt, s, e, "open"), P.px(d, s, e), P.px(nxt, s, e)
+                # stops are decided on the close of d (known at decision time) and executed at
+                # the next open, like every other exit. (Checking the close of nxt and exiting at
+                # its open would be look-ahead.)
                 stopped = False
-                if held.get("stop") and np.isfinite(c_now):
+                if trail and held.get("stop") and np.isfinite(c_prev):
+                    best = max(held["best"], c_prev) if held["side"] > 0 else min(held["best"], c_prev)
+                    held = dict(held, best=best, stop=best * held["k"])
+                if held.get("stop") and np.isfinite(c_prev):
                     lvl = held["stop"]
-                    stopped = (c_now <= lvl) if held["side"] > 0 else (c_now >= lvl)
+                    stopped = (c_prev <= lvl) if held["side"] > 0 else (c_prev >= lvl)
                 if w == held["side"] and not stopped:
                     if not np.isfinite(c_now) or not np.isfinite(c_prev):
                         new_book[s] = held
@@ -108,7 +119,9 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                     if np.isfinite(o) and np.isfinite(c_prev):
                         pnl[held["side"]].append(held["side"] * (o / c_prev - 1) - half)
                     trades += 1
-                    w = None if stopped else w
+                    if stopped:
+                        banned[s] = held["side"]
+                        w = None
             if w is not None and s not in new_book and (held is None or held["side"] != w or True):
                 if held is not None and held["side"] == w:
                     continue
@@ -118,15 +131,16 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                 o, c_now = P.px(nxt, s, e, "open"), P.px(nxt, s, e)
                 if not (np.isfinite(o) and np.isfinite(c_now)):
                     continue
-                stop = None
-                if stp is not None and (d, s) in stp.index:
+                stop, k = None, None
+                if stp is not None and stop_mult and (d, s) in stp.index:
                     sl, ss = stp.loc[(d, s)]
                     base = sl if w > 0 else ss
                     if np.isfinite(base):
-                        stop = o * (1 + stop_mult * (base - 1))
+                        k = 1 + stop_mult * (base - 1)
+                        stop = o * k
                 pnl[w].append(w * (c_now / o - 1) - half)
                 trades += 1
-                new_book[s] = dict(side=w, expiry=e, stop=stop)
+                new_book[s] = dict(side=w, expiry=e, stop=stop, k=k, best=o)
         book = new_book
         nl, ns = len(pnl[1]), len(pnl[-1])
         ret = (np.mean(pnl[1]) if nl else 0.0) + (np.mean(pnl[-1]) if ns else 0.0)

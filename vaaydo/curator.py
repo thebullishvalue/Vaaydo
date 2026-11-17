@@ -1,13 +1,11 @@
 """
 The daily curator: from the latest NSE close to tomorrow's order list.
 
-    prepare() -> Curation                     (slow: data, scores, model book, levels, context)
-    personalize(cur, capital, leverage)       (fast: your book and your orders)
-    run(capital, leverage) -> Curation         (both)
-        .actions   ENTER / EXIT / HOLD for every model-book name, with the futures contract,
-                   lots, reference price, disaster stop, Pragyam's 10-session range and why
-        .yours     the subset that fits your capital (most extreme first, long/short balanced)
-        .context   Order Flow reading for every name: build-up, OI walls, PCR, IV, skew, event
+    prepare() -> Prepared                   slow, cached: data, scores, Pragyam, prices
+    orders(prep, capital, leverage) -> Orders   fast: your book and your orders (and the model's)
+
+Every position comes from `ledger.replay`, the backtest's own rules on real prices: entry
+at the futures open after the signal, a trailing stop, exits on the signal or the stop.
 """
 from __future__ import annotations
 
@@ -17,258 +15,200 @@ from datetime import date
 import numpy as np
 import pandas as pd
 
+from . import ledger as LG
 from . import session, signal
 from .data import bhavcopy
 
-STOP_MULT = 2.0
-ROLL_BEFORE = 3     # sessions before expiry at which a position rolls
+WINDOW = 160          # sessions replayed (covers every live position's history)
+MIN_SESSIONS_TO_EXPIRY = 7
 
 
 @dataclass
-class Curation:
+class Prepared:
     asof: pd.Timestamp
-    actions: pd.DataFrame
-    yours: pd.DataFrame
-    context: pd.DataFrame
+    dates: list
+    model: dict                 # {date: {symbol: side}} score membership
+    ext: dict                   # {date: {symbol: |pct - 0.5|}}
     scores: pd.DataFrame
-    log: pd.DataFrame
+    closes: pd.DataFrame        # adjusted spot
+    opens: pd.DataFrame
+    ratios: dict                # {(symbol, side): Series} Pragyam stop ratio
+    levels: pd.DataFrame        # today's Pragyam levels per symbol
+    fut: pd.DataFrame           # today's futures (contract to trade per symbol)
+    context: pd.DataFrame
+    margin_rate: float
     notes: list = field(default_factory=list)
 
 
-def _futures_today(d: date) -> pd.DataFrame:
-    f = bhavcopy.load_range([d], columns=["date", "inst", "symbol", "expiry", "close", "settle", "lot", "spot", "oi", "contracts"],
+@dataclass
+class Orders:
+    yours: pd.DataFrame
+    model: pd.DataFrame
+
+
+def _calendar():
+    return pd.DatetimeIndex(sorted(pd.Timestamp(d) for d in bhavcopy.available_days()))
+
+
+def _futures_day(d) -> pd.DataFrame:
+    if bhavcopy.fetch_day(pd.Timestamp(d).date()) is None:
+        return pd.DataFrame()
+    f = bhavcopy.load_range([pd.Timestamp(d).date()], columns=["inst", "symbol", "expiry", "open", "close", "lot"],
                             filters=[("inst", "==", "STF")])
     f["expiry"] = pd.to_datetime(f["expiry"])
     return f
 
 
-def _contract(fut: pd.DataFrame, sym: str, asof: pd.Timestamp, sessions_left) -> pd.Series | None:
-    x = fut[fut["symbol"] == sym].sort_values("expiry")
-    for _, r in x.iterrows():
-        if sessions_left(r["expiry"]) > max(ROLL_BEFORE, 7):
-            return r
-    return None
+def _tradable_contracts(f: pd.DataFrame, asof: pd.Timestamp, cal) -> pd.DataFrame:
+    """Per symbol: the nearest future with more than a week of sessions left."""
+    def left(e):
+        return int(((cal > asof) & (cal <= e)).sum()) if e <= cal[-1] else int(np.busday_count(asof.date(), e.date()))
+    f = f.copy()
+    f["left"] = f["expiry"].map(left)
+    f = f[f["left"] > MIN_SESSIONS_TO_EXPIRY].sort_values("expiry")
+    return f.groupby("symbol").first()
 
 
-def pragyam_levels(symbols: list[str], asof: pd.Timestamp) -> pd.DataFrame:
-    """Pragyam on ~4 years of daily history per symbol, read at `asof`."""
+def _fill_from_nse(h: pd.DataFrame, days, names) -> pd.DataFrame:
+    """Add sessions Yahoo has not posted yet from NSE's equity bhavcopy (same exchange
+    prices; scaled to Yahoo's adjusted level by the last common close)."""
+    from .data import equity
+    h = h.copy()
+    h["date"] = pd.to_datetime(h["date"])
+    have = set(zip(h["symbol"], h["date"]))
+    add = []
+    for d in days:
+        e = equity.fetch_day(d)
+        if e is None:
+            continue
+        e = e[e["symbol"].isin(names)]
+        for r in e.itertuples():
+            if (r.symbol, pd.Timestamp(d)) in have:
+                continue
+            prior = h[(h["symbol"] == r.symbol) & (h["date"] < pd.Timestamp(d))].tail(1)
+            k = 1.0
+            if len(prior):
+                pe = equity.fetch_day(prior["date"].iloc[0].date())
+                pc = pe[pe["symbol"] == r.symbol]["close"] if pe is not None else pd.Series(dtype=float)
+                if len(pc) and pc.iloc[0] > 0:
+                    k = prior["close"].iloc[0] / pc.iloc[0]
+            add.append(dict(date=pd.Timestamp(d), symbol=r.symbol, open=r.open * k, high=r.high * k, low=r.low * k,
+                            close=r.close * k, adj=r.close * k, volume=r.qty))
+    if add:
+        h = pd.concat([h, pd.DataFrame(add)], ignore_index=True).sort_values(["symbol", "date"])
+    return h
+
+
+def prepare(margin_rate: float = 0.20, progress=None) -> Prepared:
     from . import pragyam as PG
     from .data import history
-    h = history.load(symbols)
-    rows = []
+    notes = []
+    days = session.recent_sessions(6)
+    asof = pd.Timestamp(days[-1])
+    sc = signal.scores(signal.extend_inputs(days, progress=progress))
+    model: dict = {}
+    signal.replay(sc, daily=model)
+    dates = sorted(model)[-WINDOW:]
+    if dates[-1] != asof:
+        notes.append(f"Scores end {dates[-1].date()}; latest session {asof.date()}.")
+    ext = {d: (g.set_index("symbol")["pct"] - 0.5).abs().to_dict() for d, g in sc[sc["date"].isin(dates)].groupby("date")}
+    names = sorted(set().union(*[set(model[d]) for d in dates]))
+    h = history.load(names, until=asof)
+    h = h[h["symbol"].isin(names)]
+    h = _fill_from_nse(h, days, names)
+    closes = h.pivot(index="date", columns="symbol", values="close")
+    opens = h.pivot(index="date", columns="symbol", values="open")
+    ratios, lv = {}, []
     for s, d in h.groupby("symbol"):
-        if s not in symbols:
-            continue
-        d = d.set_index("date").sort_index()
-        d = d[d.index <= asof][["open", "high", "low", "close"]].iloc[-1100:]
+        d = d.set_index("date").sort_index()[["open", "high", "low", "close"]]
+        d = d[d.index <= asof].iloc[-1100:]
         if len(d) < 300:
             continue
-        R = PG.run(d).iloc[-1]
+        R = PG.run(d)
+        ratios[(s, 1)] = R["stopL"] / d["close"]
+        ratios[(s, -1)] = R["stopS"] / d["close"]
+        last = R.iloc[-1]
         c = d["close"].iloc[-1]
-        rows.append(dict(symbol=s, prg_close=c, stopL_r=R["stopL"] / c, stopS_r=R["stopS"] / c,
-                         up_r=R["upper"] / c, lo_r=R["lower"] / c, sig=R["sig"], trend=R["T"],
-                         regime=["calm", "normal", "stressed"][int(R["reg"])] if np.isfinite(R["reg"]) else None))
-    return pd.DataFrame(rows)
-
-
-def prepare(margin_rate: float = 0.20, n_context_days: int = 6, progress=None) -> Curation:
-    """Everything that does not depend on your capital: data, scores, model book, levels,
-    context. Leverage (gross notional / capital) is applied in `personalize`; 1.0 is the
-    tested default: at 3x a -17% book drawdown becomes about -50% of capital."""
-    notes = []
-    days = session.recent_sessions(max(n_context_days, 2))
-    asof = pd.Timestamp(days[-1])
-    inputs = signal.extend_inputs(days, progress=progress)
-    sc = signal.scores(inputs)
-    daily: dict = {}
-    book, log = signal.replay(sc, daily=daily)
-    last = sc[sc["date"] == sc["date"].max()].set_index("symbol")
-    if sc["date"].max() != asof:
-        notes.append(f"Scores end {sc['date'].max().date()} but the latest session is {asof.date()}.")
-
-    cal = pd.DatetimeIndex(sorted(pd.Timestamp(d) for d in bhavcopy.available_days()))
-
-    def sessions_left(exp):
-        exp = pd.Timestamp(exp)
-        if exp <= cal[-1]:
-            return int(((cal > asof) & (cal <= exp)).sum())
-        return int(np.busday_count(asof.date(), exp.date()))
-
-    fut = _futures_today(asof.date())
-    today_log = log[log["date"] == log["date"].max()] if len(log) else log
-    exits = today_log[today_log["action"] == "exit"]["symbol"].tolist() if len(log) else []
-    names = sorted(set(book) | set(exits))
-    prg = pragyam_levels(names, asof)
-    prg = prg.set_index("symbol") if len(prg) else pd.DataFrame()
-
-    # entry reference for held names: futures close on the entry session (for P&L and stop)
-    entry_px = {}
-    for s, p in book.items():
-        try:
-            f0 = _futures_today(p.since.date()) if p.since.date() in set(bhavcopy.available_days()) else None
-            if f0 is None:
-                bhavcopy.fetch_day(p.since.date())
-                f0 = _futures_today(p.since.date())
-            c0 = f0[(f0["symbol"] == s)].sort_values("expiry")
-            c0 = c0[c0["expiry"] > p.since + pd.Timedelta(days=7)]
-            if len(c0):
-                entry_px[s] = float(c0["close"].iloc[0])
-        except Exception:
-            pass
-    entry_prg = {}
-    try:
-        for s, p in book.items():
-            if p.since != asof:
-                lv = pragyam_levels([s], p.since)
-                if len(lv):
-                    entry_prg[s] = lv.iloc[0]
-    except Exception:
-        pass
-
-    rows = []
-    for s in names:
-        p = book.get(s)
-        side = p.side if p else int(today_log[today_log["symbol"] == s]["side"].iloc[0])
-        c = _contract(fut, s, asof, sessions_left)
-        if c is None:
-            notes.append(f"{s}: no futures contract far enough from expiry")
-            continue
-        ref = float(c["close"])
-        lot = int(c["lot"])
-        pr = prg.loc[s] if len(prg) and s in prg.index else None
-        # disaster stop: 2x Pragyam's 20%-touch distance, set at entry, on the futures price
-        if p and s in entry_px and s in entry_prg:
-            e_r = entry_prg[s]["stopL_r"] if side > 0 else entry_prg[s]["stopS_r"]
-            stop = entry_px[s] * (1 + STOP_MULT * (e_r - 1))
-        elif pr is not None:
-            stop = ref * (1 + STOP_MULT * ((pr["stopL_r"] if side > 0 else pr["stopS_r"]) - 1))
-        else:
-            stop = np.nan
-        breached = bool(p and np.isfinite(stop) and ((ref <= stop) if side > 0 else (ref >= stop)))
-        if not p:
-            action = "EXIT"
-            why = "left the band (score no longer in the top/bottom 15%)"
-        elif breached:
-            action = "EXIT"
-            why = "disaster stop breached"
-        elif p.since == asof:
-            action = "ENTER"
-            why = "score entered the top 5%" if side > 0 else "score entered the bottom 5%"
-        else:
-            action = "HOLD"
-            why = f"in the book since {p.since.date()}"
-        e0 = entry_px.get(s)
-        stop_today = (ref * (1 + STOP_MULT * ((pr["stopL_r"] if side > 0 else pr["stopS_r"]) - 1))
-                      if pr is not None else np.nan)
-        rows.append(dict(stop_today=stop_today,
-            action=action, symbol=s, side="LONG" if side > 0 else "SHORT", contract=c["expiry"].date(),
-            lot=lot, ref_price=ref, notional=ref * lot, margin_est=ref * lot * margin_rate,
-            stop=stop, stop_dist=abs(stop / ref - 1) if np.isfinite(stop) else np.nan,
-            range_lo=ref * pr["lo_r"] if pr is not None else np.nan, range_hi=ref * pr["up_r"] if pr is not None else np.nan,
-            since=p.since.date() if p else None,
-            pnl_pct=(side * (ref / e0 - 1)) if (p and e0 and p.since != asof) else np.nan,
-            score_pct=float(last["pct"].get(s, np.nan)), opi_today=float(last["opi_pct"].get(s, np.nan)),
-            trend=pr["trend"] if pr is not None else np.nan, risk_regime=pr["regime"] if pr is not None else None,
-            sessions_to_expiry=sessions_left(c["expiry"]), why=why))
-    actions = pd.DataFrame(rows)
-    order = {"EXIT": 0, "ENTER": 1, "HOLD": 2}
-    if len(actions):
-        actions["extreme"] = (actions["score_pct"] - 0.5).abs()
-        actions = actions.sort_values(["action", "extreme"], key=lambda s: s.map(order) if s.name == "action" else -s)
-
-    # lot notional for every name the model book held in the last 40 sessions (for your book)
-    notional = {}
-    for s_ in set().union(*[set(v) for v in list(daily.values())[-40:]]) if daily else []:
-        c_ = _contract(fut, s_, asof, sessions_left)
-        if c_ is not None:
-            notional[s_] = (float(c_["close"]) * int(c_["lot"]), c_["expiry"].date(), int(c_["lot"]), float(c_["close"]))
-    ext = {d: (g.set_index("symbol")["pct"] - 0.5).abs().to_dict()
-           for d, g in sc[sc["date"].isin(list(daily)[-40:])].groupby("date")}
+        lv.append(dict(symbol=s, spot_close=c, lo_r=last["lower"] / c, up_r=last["upper"] / c, trend=last["T"],
+                       regime=["calm", "normal", "stressed"][int(last["reg"])] if np.isfinite(last["reg"]) else None))
+    cal = _calendar()
+    fut = _tradable_contracts(_futures_day(asof), asof, cal)
     context = build_context(asof, days, names)
-    cur = Curation(asof, actions, pd.DataFrame(), context, sc, log, notes)
-    cur.daily, cur.book, cur.notional, cur.ext, cur.margin_rate = daily, book, notional, ext, margin_rate
-    return cur
+    return Prepared(asof, dates, model, ext, sc, closes, opens, ratios, pd.DataFrame(lv).set_index("symbol"),
+                    fut, context, margin_rate, notes)
 
 
-def run(capital: float = 5_000_000, leverage: float = 1.0, margin_rate: float = 0.20, progress=None) -> Curation:
-    cur = prepare(margin_rate=margin_rate, progress=progress)
-    cur.yours = personalize(cur, capital, leverage)
-    return cur
+def _entry_price(sym: str, exec_date, cache: dict) -> tuple[float, object]:
+    """Futures open on the entry session, for the contract that was traded then."""
+    if exec_date is None:
+        return np.nan, None
+    key = pd.Timestamp(exec_date)
+    if key not in cache:
+        cache[key] = _futures_day(key)
+    f = cache[key]
+    if f.empty:
+        return np.nan, None
+    x = f[(f["symbol"] == sym) & (f["expiry"] > key + pd.Timedelta(days=10))].sort_values("expiry")
+    if x.empty:
+        return np.nan, None
+    o = x["open"].iloc[0]
+    return (float(o) if o > 0 else float(x["close"].iloc[0])), x["expiry"].iloc[0].date()
 
 
-def personalize(cur: Curation, capital: float, leverage: float = 1.0) -> pd.DataFrame:
-    """Your book and your orders for this capital and leverage (gross notional / capital)."""
-    actions = cur.actions
-    if actions is None or actions.empty:
-        return pd.DataFrame()
-    stopped = set(actions[(actions["action"] == "EXIT") & (actions["why"] == "disaster stop breached")]["symbol"])
-    daily = {d: {s: v for s, v in m.items() if not (d == max(cur.daily) and s in stopped)} for d, m in cur.daily.items()}
-    nmap = {s: v[0] for s, v in cur.notional.items()}
-    prev_y, now_y = signal.personal_replay(daily, cur.ext, nmap, nmap, capital * leverage)
+def _rows(prep: Prepared, led: LG.Ledger, capital: float) -> pd.DataFrame:
+    asof, fut, lv = prep.asof, prep.fut, prep.levels
+    cache: dict = {}
     rows = []
-    for s_, sd in now_y.items():
-        r = actions[actions["symbol"] == s_]
-        if len(r):
-            r = r.iloc[0].copy()
-            r["your_action"] = "HOLD" if prev_y.get(s_) == sd else "ENTER"
-            if r["your_action"] == "ENTER" and r["action"] == "HOLD":
-                # in the model book already; joins yours now that capital is free
-                r["why"] = f"in the model book since {r['since']}; joins your book as capital frees up"
-                r["pnl_pct"] = np.nan
-                if np.isfinite(r.get("stop_today", np.nan)):          # your risk starts at today's price
-                    r["stop"] = r["stop_today"]
-                    r["stop_dist"] = abs(r["stop"] / r["ref_price"] - 1)
-            rows.append(r)
-    for s_, sd in prev_y.items():
-        if now_y.get(s_) == sd:
+    items = [(s, p, "HOLD" if s in led.prev and led.prev[s].side == p.side else "ENTER", "") for s, p in led.held.items()]
+    items += [(s, p, "EXIT", why) for s, (p, why) in led.exits_today.items()]
+    for s, p, action, why in items:
+        if s not in fut.index:
             continue
-        r = actions[actions["symbol"] == s_]
-        if len(r):
-            r = r.iloc[0].copy()
-        elif s_ in cur.notional:
-            n, exp, lot, px = cur.notional[s_]
-            r = pd.Series(dict(symbol=s_, side="LONG" if sd > 0 else "SHORT", contract=exp, lot=lot, ref_price=px,
-                               notional=n, margin_est=n * cur.margin_rate, why="left the model book"))
-        else:
-            continue
-        r["your_action"] = "EXIT"
-        if s_ in cur.book and cur.book[s_].side == sd and s_ not in stopped:
-            r["why"] = "displaced by a more extreme name (capital limit)"
-        rows.append(r)
-    y = pd.DataFrame(rows)
-    if len(y):
-        order = {"EXIT": 0, "ENTER": 1, "HOLD": 2}
-        y = y.sort_values("your_action", key=lambda s: s.map(order))
-    return y
+        c = fut.loc[s]
+        last = float(c["close"])
+        lot = int(c["lot"])
+        spot = prep.closes[s].dropna().iloc[-1] if s in prep.closes else np.nan
+        f2s = last / spot if np.isfinite(spot) and spot > 0 else np.nan
+        stop = p.stop * f2s if (p.stop is not None and np.isfinite(f2s)) else np.nan
+        if action == "ENTER":
+            r = prep.ratios.get((s, p.side))
+            rv = r.iloc[-1] if r is not None and len(r) else np.nan
+            stop = last * (1 + LG.STOP_MULT * (rv - 1)) if np.isfinite(rv) else np.nan
+        entry, entry_contract = _entry_price(s, p.exec, cache) if action != "ENTER" else (np.nan, None)
+        pnl = p.side * (last - entry) * lot if np.isfinite(entry) else np.nan
+        risk = abs(last - stop) * lot if np.isfinite(stop) else np.nan
+        lvl = lv.loc[s] if s in lv.index else None
+        if not why:
+            why = ("new signal: score entered the top 5%" if p.side > 0 else "new signal: score entered the bottom 5%") \
+                if action == "ENTER" and p.signal == asof else (
+                "joins your book: signal since " + f"{p.signal:%d %b}" if action == "ENTER" else f"signal since {p.signal:%d %b}")
+        rows.append(dict(
+            action=action, symbol=s, side="LONG" if p.side > 0 else "SHORT", contract=pd.Timestamp(c["expiry"]).date(),
+            lot=lot, signal_date=p.signal.date(), entry_date=p.exec.date() if p.exec is not None else None,
+            entry_price=entry, entry_contract=entry_contract, last=last, pnl=pnl,
+            pnl_pct=p.side * (last / entry - 1) if np.isfinite(entry) else np.nan,
+            stop=stop, stop_from_last=(stop / last - 1) if np.isfinite(stop) else np.nan,
+            stop_from_entry=(stop / entry - 1) if (np.isfinite(stop) and np.isfinite(entry)) else np.nan,
+            risk_to_stop=risk, risk_pct_capital=risk / capital if np.isfinite(risk) else np.nan,
+            range_lo=last * lvl["lo_r"] if lvl is not None else np.nan, range_hi=last * lvl["up_r"] if lvl is not None else np.nan,
+            notional=last * lot, margin=last * lot * prep.margin_rate, risk_regime=lvl["regime"] if lvl is not None else None,
+            score_pct=float(prep.scores[(prep.scores["date"] == prep.scores["date"].max()) & (prep.scores["symbol"] == s)]["pct"].iloc[0])
+            if ((prep.scores["date"] == prep.scores["date"].max()) & (prep.scores["symbol"] == s)).any() else np.nan,
+            why=why))
+    out = pd.DataFrame(rows)
+    if len(out):
+        out["order"] = out["action"].map({"EXIT": 0, "ENTER": 1, "HOLD": 2})
+        out["extreme"] = (out["score_pct"] - 0.5).abs()
+        out = out.sort_values(["order", "side", "extreme"], ascending=[True, True, False]).drop(columns="order")
+    return out
 
 
-def fit_capital(actions: pd.DataFrame, capital: float, budget: float) -> pd.DataFrame:  # kept for API compatibility
-    """1 lot per name. Most extreme first, alternating long and short, until the margin
-    budget (capital x budget) is used; keeps long and short notional within one lot."""
-    if actions is None or actions.empty:
-        return pd.DataFrame()
-    live = actions[actions["action"] != "EXIT"].copy()
-    longs = live[live["side"] == "LONG"].sort_values("extreme", ascending=False)
-    shorts = live[live["side"] == "SHORT"].sort_values("extreme", ascending=False)
-    cap = capital * budget
-    chosen, used, nl, ns = [], 0.0, 0.0, 0.0
-    li, si = 0, 0
-    while li < len(longs) or si < len(shorts):
-        take_long = (nl <= ns and li < len(longs)) or si >= len(shorts)
-        r = longs.iloc[li] if take_long else shorts.iloc[si]
-        if take_long:
-            li += 1
-        else:
-            si += 1
-        if used + r["margin_est"] > cap:
-            continue
-        chosen.append(r)
-        used += r["margin_est"]
-        if take_long:
-            nl += r["notional"]
-        else:
-            ns += r["notional"]
-    return pd.DataFrame(chosen)
+def orders(prep: Prepared, capital: float, leverage: float = 1.0) -> Orders:
+    notional = {s: float(r["close"]) * int(r["lot"]) for s, r in prep.fut.iterrows()}
+    model_led = LG.replay(prep.dates, prep.model, prep.closes, prep.opens, prep.ratios)
+    your_led = LG.replay(prep.dates, prep.model, prep.closes, prep.opens, prep.ratios, ext=prep.ext,
+                         notional=notional, cap=capital * leverage)
+    return Orders(yours=_rows(prep, your_led, capital), model=_rows(prep, model_led, capital))
 
 
 def build_context(asof: pd.Timestamp, days, names) -> pd.DataFrame:
@@ -283,5 +223,4 @@ def build_context(asof: pd.Timestamp, days, names) -> pd.DataFrame:
     ctx["event"] = ctx["term"] > 1.08
     ctx["wall_put"] = ctx["fwd"] * np.exp(ctx["wall_put_d"])
     ctx["wall_call"] = ctx["fwd"] * np.exp(ctx["wall_call_d"])
-    ctx["max_pain"] = ctx["fwd"] * np.exp(ctx["max_pain_d"])
     return ctx
