@@ -97,10 +97,19 @@ session to run the update routine (`.claude/skills/panchang`); without Claude, t
 routine is `python scripts/panchang.py` (`--holidays circular.txt` loads a year's NSE holiday
 list from the circular's text; `--check-only` changes nothing).
 
+## Interface
+
+VAAYDO is a member of the Pragyam family (Tattva, Nishkarsh, Nivesa, Pragyam, Arthagati,
+Samhita, Swing, Sanket) and shares its interface: one stylesheet (`ui/theme.css`), one set
+of components (`ui/components.py`), Slate and Paper appearances. Every chart and table sits
+in a panel whose header band carries its context; numbers are right-aligned in JetBrains
+Mono, signed ones in their sign's colour; each tab opens with a titled section. Changes are
+in `CHANGELOG.md`.
+
 ## Layout
 
 ```
-app.py                  the screener (Streamlit, Graphite design system in ui/; ui/desk.py is the index desk)
+app.py                  the screener (Streamlit; the family's design system in ui/; ui/desk.py is the index desk)
 vaaydo/
   curator.py            one run: data, scores, the book replay, flow, the screen
   ledger.py             positions as chains of contract legs: fills, rolls, stops, corporate actions

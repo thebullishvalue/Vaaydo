@@ -43,6 +43,28 @@ def _pctile(s: pd.Series, v) -> float:
     return float((s < v).mean()) if len(s) and np.isfinite(v) else np.nan
 
 
+INDEXES = ("NIFTY", "BANKNIFTY")
+
+
+def _index_picker(key: str) -> str:
+    """NIFTY or BANKNIFTY, as the family's segmented control (a radio drew Streamlit's own type)."""
+    pick, _ = st.columns([1, 2])
+    with pick:
+        v = st.segmented_control("Index", list(INDEXES), default=INDEXES[0], key=key)
+    return v or INDEXES[0]
+
+
+def _vlines(fig, lines) -> None:
+    """Reference lines whose labels do not collide: each label opens away from its nearest
+    neighbour (a "flip" 65 points left of "spot" printed as "flipspot")."""
+    live = [(float(x), nm, c, dash) for x, nm, c, dash in lines if x is not None and np.isfinite(x)]
+    for x, nm, c, dash in live:
+        others = [o for o, *_ in live if o != x]
+        near = min(others, key=lambda o: abs(o - x)) if others else None
+        side = "top left" if near is not None and near > x else "top right"
+        fig.add_vline(x=x, line_dash=dash, line_color=chart_color(c), annotation_text=nm, annotation_position=side)
+
+
 def _regime(row) -> tuple[str, str]:
     g = row.get("gex_dealer", np.nan)
     if not np.isfinite(g):
@@ -87,10 +109,8 @@ def _oi_chart(v, sym, r):
     fig = go.Figure()
     fig.add_bar(x=pr["strike"], y=pr.get("oi_ce", 0) / 1e5, name="Call OI", marker_color=chart_color("rose"), opacity=0.85)
     fig.add_bar(x=pr["strike"], y=-pr.get("oi_pe", 0) / 1e5, name="Put OI", marker_color=chart_color("emerald"), opacity=0.85)
-    for x, nm, c, pos in ((S, "spot", "accent", "top right"), (r.get("max_pain"), "max pain", "amber", "top left"),
-                          (r.get("flip"), "gamma flip", "violet", "bottom left")):
-        if x is not None and np.isfinite(x):
-            fig.add_vline(x=x, line_dash="dot", line_color=chart_color(c), annotation_text=nm, annotation_position=pos)
+    _vlines(fig, ((S, "spot", "accent", "dot"), (r.get("max_pain"), "max pain", "amber", "dot"),
+                  (r.get("flip"), "gamma flip", "violet", "dot")))
     fig.update_layout(**chart_layout(height=380), barmode="relative")
     ui.render_chart_panel(fig, f"oi-{sym}", f"{sym} open interest by strike · {pd.Timestamp(v['expiry']):%d %b} expiry",
                           units="lakh units · calls up, puts down")
@@ -108,9 +128,7 @@ def _gex_chart(v, sym, r):
     g = g[(g["strike"] >= S * 0.94) & (g["strike"] <= S * 1.06)]
     fig = go.Figure(go.Bar(x=g["strike"], y=g["gex_cr"],
                            marker_color=[chart_color("emerald") if y >= 0 else chart_color("rose") for y in g["gex_cr"]]))
-    fig.add_vline(x=S, line_dash="dot", line_color=chart_color("accent"), annotation_text="spot")
-    if np.isfinite(r.get("flip", np.nan)):
-        fig.add_vline(x=r["flip"], line_dash="dash", line_color=chart_color("violet"), annotation_text="flip")
+    _vlines(fig, ((S, "spot", "accent", "dot"), (r.get("flip", np.nan), "flip", "violet", "dash")))
     fig.update_layout(**chart_layout(height=320, show_legend=False))
     ui.render_chart_panel(fig, f"gex-{sym}", f"{sym} dealer gamma by strike (options ≤ 60 days)",
                           units="₹ Cr of delta per 1% move · dealers long calls, short puts")
@@ -161,9 +179,10 @@ def _participants(dk, start):
                      "Net futures": _num(fl - fs), "Long share": _pct(fl / (fl + fs), 1, False),
                      "Calls long − short": _num(x["opt_idx_call_long"] - x["opt_idx_call_short"]),
                      "Puts long − short": _num(x["opt_idx_put_long"] - x["opt_idx_put_short"])})
-    ui.render_section_header("Who holds the index", f"NSE participant-wise open interest, contracts, as on {raw['date'].max():%d %b %Y}. "
+    ui.render_section_header("Who Holds the Index", f"NSE participant-wise open interest, contracts, as on {raw['date'].max():%d %b %Y}. "
                              "All index futures and options together.", icon="briefcase")
-    ui.render_data_table(pd.DataFrame(rows), show_index=False, label_col="Participant")
+    ui.render_table_panel(pd.DataFrame(rows), "part-table", units="contracts", show_index=False, label_col="Participant",
+                          sign_color_cols={"Net futures", "Calls long − short", "Puts long − short"})
     pf = dk.participants
     pf = pf[pf.index >= start]
     fig = go.Figure()
@@ -210,7 +229,7 @@ def _combined_reads(dk):
     rd = getattr(dk, "reads", None) or {}
     if not rd:
         return
-    ui.render_section_header("NIFTY: combined reads (paper)", "Weak readings combined without fitted weights. Both pass the "
+    ui.render_section_header("NIFTY: Combined Reads (Paper)", "Weak readings combined without fitted weights. Both pass the "
                              "statistical bar on 2019–2026 but lost to simply holding NIFTY in 2023–24, so they are tracked, "
                              "not traded.", icon="layers")
     pr = rd.get("precedent", {})
@@ -226,17 +245,18 @@ def _combined_reads(dk):
              color_class="neutral" if not pr or pr["p"] >= 0.05 else ("success" if pr["read"] > 0 else "danger")),
     ], max_cols=2, key="combined-reads")
     if pr and pr.get("analogs"):
-        ui.render_data_table(pd.DataFrame([{"Past session": f"{pd.Timestamp(d):%d %b %Y}", "NIFTY futures, next 5 sessions": _pct(o, 2),
-                                            "Distance": f"{dist:.2f}"} for d, o, dist in pr["analogs"]]),
-                             show_index=False, label_col="Past session", max_height=380)
-        st.markdown(f'<div class="panel-copy">The {len(pr["analogs"])} past sessions whose trend, breadth, PCR, FII stance, IV and dealer gamma '
-                    'looked most like today\'s (Mahalanobis distance, distinct episodes, outcomes known at the time).</div>',
-                    unsafe_allow_html=True)
+        ui.render_table_panel(pd.DataFrame([{"Past session": f"{pd.Timestamp(d):%d %b %Y}", "NIFTY futures, next 5 sessions": _pct(o, 2),
+                                             "Distance": f"{dist:.2f}"} for d, o, dist in pr["analogs"]]),
+                              "desk-analogs", context="NIFTY · nearest past sessions · outcome over the next 5",
+                              show_index=False, label_col="Past session", max_height=380,
+                              sign_color_cols={"NIFTY futures, next 5 sessions"})
+        ui.render_note(f"The {len(pr['analogs'])} past sessions whose trend, breadth, PCR, FII stance, IV and dealer gamma "
+                       "looked most like today's (Mahalanobis distance, distinct episodes, outcomes known at the time).")
 
 
 def _evidence(dk):
     T = dk.tests
-    ui.render_section_header("Every index trade VAAYDO tested", "Registered before testing (docs/PREREGISTRATION.md). "
+    ui.render_section_header("Every Index Trade VAAYDO Tested", "Registered before testing (docs/PREREGISTRATION.md). "
                              "Pooled NIFTY + BANKNIFTY, Newey–West t, 5-session forward futures return from the next open. "
                              "Accepted only with the registered sign at t ≥ 1 in every period and |t| ≥ 2 overall.", icon="shield")
     if len(T):
@@ -260,20 +280,20 @@ def _evidence(dk):
         x.insert(0, "Registered sign", ["+" if s > 0 else ("−" if s < 0 else "±") for s in sg])
         x["Verdict"] = verdict
         x.columns = [c.title() if c not in ("Registered sign", "Verdict") else c for c in x.columns]
-        ui.render_data_table(x.reset_index().rename(columns={"reading": "Reading"}), show_index=False, label_col="Reading")
-    ui.render_section_header("Strategies against simply being long", "50/50 NIFTY / BANKNIFTY futures, net of 0.03% a side.",
+        ui.render_table_panel(x.reset_index().rename(columns={"reading": "Reading"}), "ev-readings",
+                              context="NIFTY + BANKNIFTY · Newey–West t · 5-session forward", show_index=False, label_col="Reading")
+    ui.render_section_header("Strategies Against Simply Being Long", "50/50 NIFTY / BANKNIFTY futures, net of 0.03% a side.",
                              icon="trending-up")
-    ui.render_data_table(pd.DataFrame([
+    ui.render_table_panel(pd.DataFrame([
         {"Strategy": "S0 long, always (benchmark)", "Discovery": 0.48, "Validation": 0.66, "Final": -0.10, "2019–26": 0.36},
         {"Strategy": "S1 long, scaled by 15% / IV", "Discovery": 0.38, "Validation": 0.79, "Final": -0.30, "2019–26": 0.25},
         {"Strategy": "S2 60-day trend, scaled", "Discovery": 0.27, "Validation": 0.29, "Final": -0.21, "2019–26": 0.14},
-    ]), show_index=False, label_col="Strategy")
-    st.markdown('<div class="panel-copy">Net Sharpe. Futures earn the index minus carry, so being long has '
-                'lost since mid-2024 even as the index rose a little. None of the tested readings or rules beat it in every period.</div>',
-                unsafe_allow_html=True)
+    ]), "ev-strategies", context="net Sharpe by period", show_index=False, label_col="Strategy")
+    ui.render_note("Net Sharpe. Futures earn the index minus carry, so being long has lost since mid-2024 even as the "
+                   "index rose a little. None of the tested readings or rules beat it in every period.")
     C = dk.cycles
     if len(C):
-        ui.render_section_header("Selling the volatility premium", "Iron condor (short ±0.75 × the priced move, wings at ±2×) and "
+        ui.render_section_header("Selling the Volatility Premium", "Iron condor (short ±0.75 × the priced move, wings at ±2×) and "
                                  "iron fly, every expiry, real bhavcopy fills at the open, held to NSE's final settlement.",
                                  icon="activity")
         fig = go.Figure()
@@ -282,16 +302,18 @@ def _evidence(dk):
             fig.add_scatter(x=g["expiry"], y=g["ret"].cumsum() * 100, name=f"{s} {k}", mode="lines")
         fig.add_hline(y=0, line_dash="dot", line_color=chart_color("slate"))
         fig.update_layout(**chart_layout(height=320))
-        ui.render_chart_panel(fig, "cyc", "Every cycle's result, added up", units="% of that cycle's max loss; −100% = one full max loss")
+        ui.render_chart_panel(fig, "cyc", "Every cycle's result, added up", context="% of that cycle's max loss · −100% = one full max loss")
         summ = C.groupby(["structure", "symbol"]).agg(cycles=("ret", "size"), mean=("ret", "mean"), won=("pnl", lambda x: (x > 0).mean()),
                                                       worst=("ret", "min")).reset_index()
-        ui.render_data_table(pd.DataFrame({"Structure": summ["structure"], "Index": summ["symbol"], "Cycles": summ["cycles"],
-                                           "Mean per cycle": summ["mean"].map(lambda v: _pct(v, 1)),
-                                           "Won": summ["won"].map(lambda v: _pct(v, 0, False)),
-                                           "Worst": summ["worst"].map(lambda v: _pct(v, 0))}), show_index=False, label_col="Structure")
+        ui.render_table_panel(pd.DataFrame({"Structure": summ["structure"], "Index": summ["symbol"], "Cycles": summ["cycles"],
+                                            "Mean per cycle": summ["mean"].map(lambda v: _pct(v, 1)),
+                                            "Won": summ["won"].map(lambda v: _pct(v, 0, False)),
+                                            "Worst": summ["worst"].map(lambda v: _pct(v, 0))}), "ev-cycles",
+                              context="per cycle · % of max loss", show_index=False, label_col="Structure",
+                              sign_color_cols={"Mean per cycle", "Worst"})
     W = getattr(dk, "wb_tests", None)
     if W is not None and len(W):
-        ui.render_section_header("NIFTY breadth and regime workbook", "Every column rebuilt causally (the workbook's fair PE "
+        ui.render_section_header("NIFTY Breadth and Regime Workbook", "Every column rebuilt causally (the workbook's fair PE "
                                  "was fitted on all of 2006–2026). Spot 2006–2026 in three periods, then NIFTY futures 2019–2026.",
                                  icon="layers")
         w = W.copy()
@@ -303,23 +325,23 @@ def _evidence(dk):
                  "W9 pe_dev": "PE vs fair PE (20 sessions)", "W10 ey gap": "Earnings yield − 10y (20 sessions)",
                  "W11 in_yc": "Yield curve 10y − 2y (20 sessions)", "W12 count": "±1% day count"}
         w["reading"] = w["reading"].map(lambda v: plain.get(v, v))
-        ui.render_data_table(w.rename(columns={"reading": "Reading", "sign": "Sign", "P1": "Spot 2006–12", "P2": "Spot 2013–18",
-                                               "P3": "Spot 2019–26", "all": "Spot all", "disc": "Futures 2019–22",
-                                               "vali": "Futures 2023–24H1", "fina": "Futures 2024H2–26",
-                                               "fut": "Futures all"}).drop(columns=["accept"]), show_index=False, label_col="Reading")
-        ui.render_data_table(pd.DataFrame([
+        ui.render_table_panel(w.rename(columns={"reading": "Reading", "sign": "Sign", "P1": "Spot 2006–12", "P2": "Spot 2013–18",
+                                                "P3": "Spot 2019–26", "all": "Spot all", "disc": "Futures 2019–22",
+                                                "vali": "Futures 2023–24H1", "fina": "Futures 2024H2–26",
+                                                "fut": "Futures all"}).drop(columns=["accept"]), "ev-workbook",
+                              context="NIFTY · t by period", show_index=False, label_col="Reading")
+        ui.render_table_panel(pd.DataFrame([
             {"Rule": "S0 long, always", "2006–12": 0.34, "2013–18": 0.31, "2019–26": 0.41, "Fut disc": 0.58, "Fut val": 1.15, "Fut final": -0.22},
             {"Rule": "A1 long when regime > 0", "2006–12": 0.85, "2013–18": 0.12, "2019–26": 0.29, "Fut disc": 0.86, "Fut val": 0.33, "Fut final": -0.31},
             {"Rule": "A2 long when breadth > 1-year median (paper)", "2006–12": 0.72, "2013–18": 0.31, "2019–26": 0.90,
              "Fut disc": 1.33, "Fut val": 1.00, "Fut final": -0.37},
-        ]), show_index=False, label_col="Rule")
-        st.markdown('<div class="panel-copy">Net Sharpe. A2 doubles the long-run spot Sharpe in half the time, but loses to '
-                    'plain long on futures in 2023–24 and since mid-2024, so it is tracked on paper. After the workbook\'s '
-                    'dip signal, returns were <em>lower</em> than on an average day; after its top signal, higher.</div>',
-                    unsafe_allow_html=True)
+        ]), "ev-workbook-rules", context="net Sharpe by period", show_index=False, label_col="Rule")
+        ui.render_note("Net Sharpe. A2 doubles the long-run spot Sharpe in half the time, but loses to plain long on futures "
+                       "in 2023–24 and since mid-2024, so it is tracked on paper. After the workbook's dip signal, returns "
+                       "were <em>lower</em> than on an average day; after its top signal, higher.")
     N = getattr(dk, "ntests", None)
     if N is not None and len(N):
-        ui.render_section_header("NIFTY at Nishkarsh's standard", "Non-overlapping ICs averaged over start offsets, Newey–West t, "
+        ui.render_section_header("NIFTY at Nishkarsh's Standard", "Non-overlapping ICs averaged over start offsets, Newey–West t, "
                                  "block-bootstrap CI, years positive, against NIFTY's own momentum, with the smallest IC this "
                                  "history can detect (MDE). Statistical pass: HAC t ≥ 2, CI above 0, ≥ 70% of years, above momentum.",
                                  icon="shield")
@@ -327,16 +349,18 @@ def _evidence(dk):
         for c in ("IC", "MDE", "HAC t", "mom IC", "IC disc", "IC vali", "IC fina"):
             n[c] = n[c].round(3)
         n["accept"] = np.where(n["accept"], "passes", "—")
-        ui.render_data_table(n.rename(columns={"read": "Read", "accept": "Statistical pass", "yrs+": "Years +"}),
-                             show_index=False, label_col="Read")
+        ui.render_table_panel(n.rename(columns={"read": "Read", "accept": "Statistical pass", "yrs+": "Years +"}),
+                              "ev-nishkarsh", context="NIFTY · non-overlapping IC", show_index=False, label_col="Read")
         TR = getattr(dk, "ntrades", None)
         if TR is not None and len(TR):
-            ui.render_data_table(TR.rename(columns={"Disc": "2019–22", "Vali": "2023–24H1", "Fina": "2024H2–26", "All": "2019–26"}),
-                                 show_index=False, label_col="Trade (h = 5 tranches)")
-        st.markdown('<div class="panel-copy">Net Sharpe on NIFTY futures. Every combination loses to plain long in 2023–24. '
-                    'They all contain the FII options stance, so they are not independent confirmations. Single readings '
-                    'sit far below the detectable IC (0.13 at 5 sessions): unproven, not disproven.</div>', unsafe_allow_html=True)
-    ui.render_section_header("Rejected myths", icon="alert-triangle")
+            ui.render_table_panel(TR.rename(columns={"Disc": "2019–22", "Vali": "2023–24H1", "Fina": "2024H2–26", "All": "2019–26"}),
+                                  "ev-nishkarsh-trades", context="NIFTY futures · net Sharpe by period", show_index=False,
+                                  label_col="Trade (h = 5 tranches)")
+        ui.render_note("Net Sharpe on NIFTY futures. Every combination loses to plain long in 2023–24. They all contain "
+                       "the FII options stance, so they are not independent confirmations. Single readings sit far below "
+                       "the detectable IC (0.13 at 5 sessions): unproven, not disproven.")
+    ui.render_section_header("Rejected Myths", "Claims about the index options market, against what 2019–2026 says.",
+                             icon="alert-triangle")
     ui.render_kv_table({
         "Max pain pulls the index into expiry": "spot moved toward max pain in 47.5% of 737 expiries",
         "Positive dealer gamma calms the market": "right direction, too weak: realised/implied 0.835 vs 0.887, t −1.8",
@@ -353,6 +377,8 @@ def _breadth(dk, start):
     B = B.copy()
     B["median"] = B["breadth"].rolling(250, min_periods=120).median()
     r = B.iloc[-1]
+    ui.render_section_header("Market Breadth", "Every NSE stock's advances and declines, the regime they imply, and "
+                             "NIFTY's valuation.", icon="activity")
     ui.render_kpi_strip([
         dict(label="Advance / decline", value=f"{r['AD_RATIO']:.2f}", subtext=f"all NSE stocks · {pd.Timestamp(r['DATE']):%d %b}"),
         dict(label="Breadth (10-day EMA)", value=_pct(r["breadth"], 1, False), subtext=f"1-year median {_pct(r['median'], 1, False)}",
@@ -385,14 +411,16 @@ def _breadth(dk, start):
             ("Earnings yield", _pct(1 / r["NIFTY50_PE"], 2, False) if np.isfinite(r.get("NIFTY50_PE", np.nan)) else "—"),
             ("Dip / top signal today", "dip" if r["btd"] else ("top" if r["stt"] else "none"))]
     ui.render_kv_table(dict(rows), header_left="Reading", header_right="Now")
-    st.markdown('<div class="panel-copy">Advance/decline counts every NSE stock (the bhavcopy), so breadth reads the '
-                'whole market, small caps included, not NIFTY\'s fifty. Everything here is computed from NSE\'s own daily '
-                'files (equity bhavcopy and index closes).</div>', unsafe_allow_html=True)
+    ui.render_note("Advance/decline counts every NSE stock (the bhavcopy), so breadth reads the whole market, small caps "
+                   "included, not NIFTY's fifty. Everything here is computed from NSE's own daily files (equity bhavcopy "
+                   "and index closes).")
 
 
 @st.fragment
 def _oi_tab(dk, P):
-    sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_oi")
+    ui.render_section_header("Option Chain", "Open interest by strike, the walls, max pain and dealer gamma for the "
+                             "nearest expiry. Descriptions, not forecasts.", icon="crosshair")
+    sym = _index_picker("desk_sym_oi")
     v = dk.views.get(sym)
     if not v:
         ui.render_empty_state("No chain", "The option chain for this session could not be read.", eyebrow="Gamma & OI")
@@ -412,7 +440,9 @@ def _oi_tab(dk, P):
 
 @st.fragment
 def _vol_tab(dk, P, start):
-    sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_vol")
+    ui.render_section_header("Volatility", "Implied against realised, the term structure, the smile and India VIX.",
+                             icon="activity")
+    sym = _index_picker("desk_sym_vol")
     h = P[P["symbol"] == sym].sort_values("date")
     r = h.iloc[-1]
     rv = np.log(h["spot"]).diff().rolling(20).std().iloc[-1] * np.sqrt(252)
@@ -440,13 +470,18 @@ def _vol_tab(dk, P, start):
 
 @st.fragment
 def _fut_tab(P, start):
-    sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_fut")
+    ui.render_section_header("Futures and Rollover", "Cost of carry, rollover against past expiries at the same days to "
+                             "expiry, and futures open interest.", icon="trending-up")
+    sym = _index_picker("desk_sym_fut")
     _futures(P, sym, start)
 
 
 def render(dk, meta: dict):
     P = dk.panel
     start = pd.Timestamp(meta.get("start") or (dk.asof - pd.Timedelta(days=730)))
+    # Panel context lines (universe · date · units) read these, as on the stock pages.
+    st.session_state["active_universe"] = "Indices"
+    st.session_state["active_timeframe"] = f"{dk.asof:%d %b %Y}"
     n, b = _last(P, "NIFTY"), _last(P, "BANKNIFTY")
     vix = dk.vix.iloc[-1] if len(dk.vix) else np.nan
     ui.render_top_bar(target="INDICES", status_label="NO TRADE · EVIDENCE", status_tone="neutral",
@@ -459,32 +494,35 @@ def render(dk, meta: dict):
     ui.render_notice_rail(notices)
     tabs = st.tabs(["Desk", "Breadth", "Gamma & OI", "Volatility", "Participants", "Futures & Rollover", "Evidence"])
     with tabs[0]:
+        ui.render_section_header("NIFTY and BANKNIFTY", "Where each index's options and futures market is positioned "
+                                 "tonight. A description, not a forecast: the desk gives no index trades.", icon="compass")
         c1, c2 = st.columns(2, gap="small")
         with c1:
             _index_card(P, "NIFTY", dk)
         with c2:
             _index_card(P, "BANKNIFTY", dk)
-        ui.render_section_header("On paper only", "Candidates that failed validation, tracked forward without capital. "
+        ui.render_section_header("On Paper Only", "Candidates that failed validation, tracked forward without capital. "
                                  "Promoted only if they earn it out of sample.", icon="eye")
         pp = dk.paper
         if len(pp):
-            ui.render_data_table(pd.DataFrame({
+            ui.render_table_panel(pd.DataFrame({
                 "Index": pp["symbol"],
                 "FII options stance (z)": pp["fii_opt_z"].map(lambda v: f"{v:+.2f}" if v is not None and np.isfinite(v) else "—"),
                 "Paper futures side": pp["fii_side"],
                 "Front IV": pp["iv_front"].map(lambda v: _pct(v, 1, False)),
                 "Top-decile IV line": pp["iv_q90"].map(lambda v: _pct(v, 1, False)),
                 "Paper condor": pp["stress"].map(lambda s: "sell this cycle (IV in top decile)" if s else "stand aside"),
-            }), show_index=False, label_col="Index")
+            }), "desk-paper", context="paper candidates · no capital", show_index=False, label_col="Index")
         B = dk.breadth
         if B is not None and len(B):
             med = B["breadth"].rolling(250, min_periods=120).median().iloc[-1]
             b = B["breadth"].iloc[-1]
-            st.markdown('<div class="panel-copy">Breadth candidate (paper): NIFTY long while market breadth is above its '
-                        f'one-year median, flat otherwise. Today breadth {b:.1%} against {med:.1%}: '
-                        f'<strong>{"paper long" if b > med else "paper flat"}</strong>.</div>', unsafe_allow_html=True)
+            ui.render_note("Breadth candidate (paper): NIFTY long while market breadth is above its one-year median, flat "
+                           f"otherwise. Today breadth {b:.1%} against {med:.1%}: "
+                           f"<strong>{'paper long' if b > med else 'paper flat'}</strong>.")
         _combined_reads(dk)
-        ui.render_section_header("Readings against their own last year", icon="grid")
+        ui.render_section_header("Readings Against Their Own Last Year", "Each reading now, and where it sits among its last "
+                                 "250 sessions.", icon="grid")
         rows = []
         for sym in ("NIFTY", "BANKNIFTY"):
             h = P[P["symbol"] == sym].sort_values("date")
@@ -495,7 +533,8 @@ def render(dk, meta: dict):
                 v = r.get(col, np.nan)
                 rows.append({"Index": sym, "Reading": nm, "Now": f(v) if np.isfinite(v) else "—",
                              "Percentile, 250 sessions": _pct(_pctile(h[col], v), 0, False)})
-        ui.render_data_table(pd.DataFrame(rows), show_index=False, label_col="Index")
+        ui.render_table_panel(pd.DataFrame(rows), "desk-readings", context="percentile among the last 250 sessions",
+                              show_index=False, label_col="Index")
     with tabs[1]:
         _breadth(dk, start)
     with tabs[2]:
