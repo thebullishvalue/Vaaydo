@@ -16,7 +16,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import ui.components as ui
-from ui.theme import chart_color, chart_layout
+from ui.theme import chart_color, chart_layout, style_axes
 
 
 def _pct(x, d=1, sign=True):
@@ -54,15 +54,25 @@ def _index_picker(key: str) -> str:
     return v or INDEXES[0]
 
 
-def _vlines(fig, lines) -> None:
-    """Reference lines whose labels do not collide: each label opens away from its nearest
-    neighbour (a "flip" 65 points left of "spot" printed as "flipspot")."""
-    live = [(float(x), nm, c, dash) for x, nm, c, dash in lines if x is not None and np.isfinite(x)]
-    for x, nm, c, dash in live:
-        others = [o for o, *_ in live if o != x]
-        near = min(others, key=lambda o: abs(o - x)) if others else None
-        side = "top left" if near is not None and near > x else "top right"
-        fig.add_vline(x=x, line_dash=dash, line_color=chart_color(c), annotation_text=nm, annotation_position=side)
+def _vlines(fig, lines, span: float | None = None) -> None:
+    """Reference lines whose labels do not collide.
+
+    Labels open to the right of their line; a label whose line sits within an eighth of the
+    axis of the previous one drops a row, so close lines (max pain, the gamma flip and spot
+    can sit 65 points apart) stack their labels instead of printing over each other
+    ("flipspot"). The rightmost label opens to the left, inside the plot.
+    """
+    live = sorted((float(x), nm, c, dash) for x, nm, c, dash in lines if x is not None and np.isfinite(x))
+    if not live:
+        return
+    span = span or ((live[-1][0] - live[0][0]) or 1.0) * 4
+    level, prev = 0, None
+    for i, (x, nm, c, dash) in enumerate(live):
+        level = level + 1 if prev is not None and x - prev < span / 8 else 0
+        prev = x
+        side = "left" if i == len(live) - 1 and len(live) > 1 else "right"
+        fig.add_vline(x=x, line_dash=dash, line_color=chart_color(c), annotation_text=nm,
+                      annotation_position=f"top {side}", annotation_y=1 - 0.09 * level, annotation_yanchor="top")
 
 
 def _regime(row) -> tuple[str, str]:
@@ -110,8 +120,9 @@ def _oi_chart(v, sym, r):
     fig.add_bar(x=pr["strike"], y=pr.get("oi_ce", 0) / 1e5, name="Call OI", marker_color=chart_color("rose"), opacity=0.85)
     fig.add_bar(x=pr["strike"], y=-pr.get("oi_pe", 0) / 1e5, name="Put OI", marker_color=chart_color("emerald"), opacity=0.85)
     _vlines(fig, ((S, "spot", "accent", "dot"), (r.get("max_pain"), "max pain", "amber", "dot"),
-                  (r.get("flip"), "gamma flip", "violet", "dot")))
+                  (r.get("flip"), "gamma flip", "violet", "dot")), span=hi - lo)
     fig.update_layout(**chart_layout(height=380), barmode="relative")
+    style_axes(fig)
     ui.render_chart_panel(fig, f"oi-{sym}", f"{sym} open interest by strike · {pd.Timestamp(v['expiry']):%d %b} expiry",
                           units="lakh units · calls up, puts down")
     fig2 = go.Figure()
@@ -119,6 +130,7 @@ def _oi_chart(v, sym, r):
     fig2.add_bar(x=pr["strike"], y=-pr.get("oi_chg_pe", 0) / 1e5, name="Put OI change", marker_color=chart_color("emerald"))
     fig2.add_vline(x=S, line_dash="dot", line_color=chart_color("accent"))
     fig2.update_layout(**chart_layout(height=280), barmode="relative")
+    style_axes(fig2)
     ui.render_chart_panel(fig2, f"oichg-{sym}", "Today's change in open interest", units="lakh units · calls up, puts down")
 
 
@@ -128,8 +140,9 @@ def _gex_chart(v, sym, r):
     g = g[(g["strike"] >= S * 0.94) & (g["strike"] <= S * 1.06)]
     fig = go.Figure(go.Bar(x=g["strike"], y=g["gex_cr"],
                            marker_color=[chart_color("emerald") if y >= 0 else chart_color("rose") for y in g["gex_cr"]]))
-    _vlines(fig, ((S, "spot", "accent", "dot"), (r.get("flip", np.nan), "flip", "violet", "dash")))
+    _vlines(fig, ((S, "spot", "accent", "dot"), (r.get("flip", np.nan), "flip", "violet", "dash")), span=S * 0.12)
     fig.update_layout(**chart_layout(height=320, show_legend=False))
+    style_axes(fig)
     ui.render_chart_panel(fig, f"gex-{sym}", f"{sym} dealer gamma by strike (options ≤ 60 days)",
                           units="₹ Cr of delta per 1% move · dealers long calls, short puts")
 
@@ -145,6 +158,7 @@ def _vol_charts(P, dk, sym, start):
         fig.add_scatter(x=h["date"], y=r.rolling(20).std() * np.sqrt(252) * 100, name="20-day realised",
                         line_color=chart_color("amber"))
     fig.update_layout(**chart_layout(height=300))
+    style_axes(fig)
     ui.render_chart_panel(fig, f"iv-{sym}", f"{sym}: implied against realised", units="% annualised")
     v = dk.views.get(sym, {})
     c1, c2 = st.columns(2)
@@ -152,6 +166,7 @@ def _vol_charts(P, dk, sym, start):
         t = v["term"]
         f = go.Figure(go.Scatter(x=t["dte"], y=t["atm_iv"] * 100, mode="lines+markers", line_color=chart_color("accent")))
         f.update_layout(**chart_layout(height=260, show_legend=False))
+        style_axes(f)
         with c1:
             ui.render_chart_panel(f, f"term-{sym}", "Term structure", units="ATM IV % by days to expiry")
     if v and len(v.get("smile", [])):
@@ -159,6 +174,7 @@ def _vol_charts(P, dk, sym, start):
         f = go.Figure(go.Scatter(x=sm["strike"], y=sm["iv"] * 100, mode="lines+markers", line_color=chart_color("violet")))
         f.add_vline(x=v["spot"], line_dash="dot", line_color=chart_color("accent"))
         f.update_layout(**chart_layout(height=260, show_legend=False))
+        style_axes(f)
         with c2:
             ui.render_chart_panel(f, f"smile-{sym}", "Smile, nearest expiry", units="IV % by strike (out-of-the-money side)")
 
@@ -192,12 +208,14 @@ def _participants(dk, start):
                             line_color=chart_color(c))
     fig.add_hline(y=50, line_dash="dot", line_color=chart_color("slate"))
     fig.update_layout(**chart_layout(height=320))
+    style_axes(fig)
     ui.render_chart_panel(fig, "part-fut", "Index futures: long share by participant", units="% of each group's futures that is long")
     fig = go.Figure()
     for g, c in (("fii", "accent"), ("client", "amber"), ("pro", "violet")):
         fig.add_scatter(x=pf.index, y=pf[f"{g}_opt_bias"] * 100, name=g.upper() if g != "client" else "Client", line_color=chart_color(c))
     fig.add_hline(y=0, line_dash="dot", line_color=chart_color("slate"))
     fig.update_layout(**chart_layout(height=300))
+    style_axes(fig)
     ui.render_chart_panel(fig, "part-opt", "Index options stance by participant",
                           units="(long calls + short puts − short calls − long puts) / gross, %")
 
@@ -210,6 +228,7 @@ def _futures(P, sym, start):
     fig.add_scatter(x=h["date"], y=(h["roll_cost"] - 0.065) * 100, name="Roll cost over risk-free", line_color=chart_color("amber"))
     fig.add_hline(y=0, line_dash="dot", line_color=chart_color("slate"))
     fig.update_layout(**chart_layout(height=280))
+    style_axes(fig)
     ui.render_chart_panel(fig, f"basis-{sym}", f"{sym}: cost of carry", units="% a year")
     # rollover now vs the same days-to-expiry in earlier months
     r = h.iloc[-1]
@@ -217,11 +236,13 @@ def _futures(P, sym, start):
     fig = go.Figure(go.Bar(x=[f"{pd.Timestamp(e):%b %y}" for e in same["fut_expiry"]], y=same["rollover"] * 100,
                            marker_color=[chart_color("accent") if d == r["date"] else chart_color("slate") for d in same["date"]]))
     fig.update_layout(**chart_layout(height=260, show_legend=False))
+    style_axes(fig)
     ui.render_chart_panel(fig, f"roll-{sym}", f"Rollover with {int(r['fut_dte'])} calendar days to expiry, this month against the last twelve",
                           units="% of futures OI in later months")
     fig = go.Figure()
     fig.add_scatter(x=h["date"], y=h["fut_oi"] / 1e5, name="Futures OI", line_color=chart_color("violet"))
     fig.update_layout(**chart_layout(height=240, show_legend=False))
+    style_axes(fig)
     ui.render_chart_panel(fig, f"futoi-{sym}", f"{sym} futures open interest", units="lakh units, all months")
 
 
@@ -302,6 +323,7 @@ def _evidence(dk):
             fig.add_scatter(x=g["expiry"], y=g["ret"].cumsum() * 100, name=f"{s} {k}", mode="lines")
         fig.add_hline(y=0, line_dash="dot", line_color=chart_color("slate"))
         fig.update_layout(**chart_layout(height=320))
+        style_axes(fig)
         ui.render_chart_panel(fig, "cyc", "Every cycle's result, added up", context="% of that cycle's max loss · −100% = one full max loss")
         summ = C.groupby(["structure", "symbol"]).agg(cycles=("ret", "size"), mean=("ret", "mean"), won=("pnl", lambda x: (x > 0).mean()),
                                                       worst=("ret", "min")).reset_index()
@@ -393,6 +415,7 @@ def _breadth(dk, start):
     fig.add_scatter(x=h["DATE"], y=h["breadth"] * 100, name="Breadth (10-day EMA)", line_color=chart_color("accent"))
     fig.add_scatter(x=h["DATE"], y=h["median"] * 100, name="1-year median", line_color=chart_color("amber"), line_dash="dot")
     fig.update_layout(**chart_layout(height=300))
+    style_axes(fig)
     ui.render_chart_panel(fig, "breadth", "Market breadth: share of NSE stocks advancing", units="%")
     fig = go.Figure()
     fig.add_scatter(x=h["DATE"], y=h["NIFTY"], name="NIFTY", line_color=chart_color("slate"))
@@ -403,6 +426,7 @@ def _breadth(dk, start):
         ev = h[h[col] > 0]
         fig.add_scatter(x=ev["DATE"], y=ev["NIFTY"], mode="markers", marker=dict(size=8, symbol="diamond", color=chart_color(c)), name=nm)
     fig.update_layout(**chart_layout(height=320))
+    style_axes(fig)
     ui.render_chart_panel(fig, "breadth-nifty", "NIFTY with the breadth state and the dip / top signals", units="index")
     rows = [("Advancing share today", _pct(r["adv_share"], 1, False)), ("Relative breadth", _pct(r["rel_breadth"], 1, False)),
             ("A/D momentum", f"{r['rel_ad']:+.2f}"), ("Above 90-day MA", _pct(r["spread90"] / 100, 1)),
@@ -465,6 +489,7 @@ def _vol_tab(dk, P, start):
             fig.add_hline(y=float(dk.vix.tail(250).quantile(q)), line_dash="dot", line_color=chart_color(c),
                           annotation_text=f"{int(q * 100)}th pct, 1y")
         fig.update_layout(**chart_layout(height=260, show_legend=False))
+        style_axes(fig)
         ui.render_chart_panel(fig, "vix", "India VIX", units="index")
 
 

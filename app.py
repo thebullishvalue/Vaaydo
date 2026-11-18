@@ -704,6 +704,7 @@ if meta.get("mode") == "Single Date":
         fig = go.Figure(go.Bar(x=bc.values, y=bc.index, orientation="h", marker_color=[chart_color(colors[k]) for k in bc.index],
                                hovertemplate="%{y}: %{x:.0f} stock futures<extra></extra>"))
         fig.update_layout(**chart_layout(height=260, show_legend=False))
+        style_axes(fig)
         fig.update_yaxes(autorange="reversed")          # read top to bottom in the order listed
         ui.render_chart_panel(fig, "flow-build", units="stock futures by state")
         ui.render_section_header("Option Flow", "Today's stock options, read against yesterday: buyers vs writers opening, "
@@ -752,13 +753,15 @@ if meta.get("mode") == "Single Date":
         ui.render_section_header(f"Track Record, 2019 – {r.asof:%d %b %Y}", "Backtest on real NSE futures prices: next-open fills, "
                                  "all charges and slippage, trailing stops, rolls, corporate actions, F&O bans, renames. Returns on "
                                  "gross exposure: one lot of every name (lots differ in rupee size, so the book is not exactly "
-                                 "balanced), and, for reference, equal rupees in every name.", icon="trending-up")
+                                 "balanced), and, for reference, equal rupees in every name. Shaded: the validation period, which the score "
+                                 "was not designed on.", icon="trending-up")
         fig = go.Figure()
         for col, nm in TRACK_BOOKS:
             fig.add_trace(go.Scatter(x=T.index, y=(1 + T[col]).cumprod(), mode="lines", name=nm))
         fig.add_vrect(x0="2023-01-01", x1="2024-06-30", fillcolor=chart_color("amber"), opacity=0.08, line_width=0,
-                      annotation_text="validation period: the score was not designed on it", annotation_position="top left")
+                      annotation_text="validation period", annotation_position="top left")
         fig.update_layout(**chart_layout(height=340))
+        style_axes(fig)
         ui.render_chart_panel(fig, "track", context=f"2019 – {r.asof:%d %b %Y} · growth of ₹1 of gross exposure")
         summ = []
         for col, nm in TRACK_BOOKS:
@@ -845,6 +848,7 @@ else:
                                    marker_color=[chart_color("emerald") if v >= 0 else chart_color("rose") for v in mm["Rupees, one lot each"]],
                                    hovertemplate="%{x}: ₹%{y:.2f} L<extra></extra>"))
             fig.update_layout(**chart_layout(height=300, show_legend=False))
+            style_axes(fig)
             ui.render_chart_panel(fig, "hr-month", units="₹ lakh")
             ui.render_table_panel(pd.DataFrame({"Month": mm["month"], "Trades closed": mm["Trades closed"],
                                                 "Won": mm["Won"].map(lambda v: pct(v, False, 0)),
@@ -862,6 +866,7 @@ else:
         for col, nm in TRACK_BOOKS:
             fig.add_trace(go.Scatter(x=x.index, y=(1 + x[col]).cumprod(), mode="lines", name=nm))
         fig.update_layout(**chart_layout(height=340))
+        style_axes(fig)
         ui.render_chart_panel(fig, "hr-track", units="growth of ₹1")
         summ = []
         for col, nm in TRACK_BOOKS:

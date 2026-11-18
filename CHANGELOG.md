@@ -15,7 +15,10 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 VAAYDO's design system already came from Sanket's, file for file; what had not come with it
 was the way the family composes a page. Every view was measured against the family's
-changelogs and rebuilt where it differed. Nothing the engines compute changed.
+changelogs and rebuilt where it differed, then scanned as the family is: every page and tab
+at 1440, 834 and 390px in Slate and Paper for clipped, overlapping or unreadable text, every
+chart's tooltips for raw numbers, and every text element for its face, size and case. Nothing
+the engines compute changed.
 
 ### Changed
 - **Every table is a panel.** Twenty-seven tables sat bare under a section header, without the
@@ -48,8 +51,15 @@ changelogs and rebuilt where it differed. Nothing the engines compute changed.
   summary of the position.
 
 ### Fixed
-- **Reference-line labels no longer collide**: each opens away from its nearest neighbour
-  (the gamma chart printed "flipspot" where the flip sat 65 points from spot).
+- **Charts on Paper have readable axes.** No chart was given the family's axis grammar
+  (`style_axes`), so every axis kept Plotly's dark-theme defaults: on Paper the tick labels were
+  near-white on white and the gridlines heavy black. All nineteen charts now take it: hairline
+  grids, the type scale's ticks, the crosshair, in both appearances.
+- **Reference-line labels no longer collide.** A label whose line sits within an eighth of the
+  axis of the previous one drops a row, so max pain, the gamma flip and spot stack instead of
+  printing over each other ("flipspot" at full width, "max pain" over "gamma flip" on a tablet).
+- The track record's shaded validation period is labelled "validation period"; what it means
+  moved to the section's subtitle (the long label ran 149px past the plot on a phone).
 - The futures build-up chart reads top to bottom in the order its states are listed.
 - A missing reading in the Screen's rank column is a dash, explained in a note, not a sentence
   in a numeric column.
