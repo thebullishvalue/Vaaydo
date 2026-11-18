@@ -44,10 +44,11 @@ the noise, which also cuts trading by 5×.
   until its signal leaves the band. Stops were tested from none to tight trailing: none
   added return (Sharpe 0.58–0.72 for every sensible variant; tight trailing stops hurt),
   so the stop is there for risk control, and trailing keeps it close to the price.
-* **Your book** is the subset that fits your capital: names you hold stay while they are
-  in the model book; freed capital goes to the most extreme new names, alternating to
-  keep long and short notional equal. The app replays this every day, so your orders are
-  the same however often you open it.
+* **One lot of every name.** There is no capital sizing: the book is the whole model book,
+  one lot of each stock's futures contract. Lots differ in rupee size, so the book is not
+  exactly balanced long against short (12% net long of gross on average since 2019). A
+  position keeps its quantity in shares: a roll takes the new contract's lot, a split or
+  bonus rescales it, and an exchange lot revision on a running contract changes nothing.
 
 ## Why futures, not options
 

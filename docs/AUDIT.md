@@ -156,3 +156,44 @@ identical at 97 checkpoints; the nightly refresh reproduces every shipped file. 
 regenerated: model book Sharpe 0.76 (was 0.80) with a deeper worst drawdown, −17.4% (was −13.4%);
 20 names 0.69; 12 names 0.80; 6 names 0.36. NIFTY verdicts unchanged on the cleaned data.
 Reproduce: scripts/audit/{data,legs,asof,equiv,refresh}.py.
+
+## Third pass, 18 Nov 2026: one lot per position, rupee reconciliation
+
+**Capital sizing removed.** Every position is one lot; the book is the whole model book. The
+sizing rail, the capital-limited replay and its helpers are gone.
+
+**The track record now measures what is traded.** The backtest weighted every name equally in
+rupees; one lot of each is not equal rupees. The simulator now also books every position at
+its lot and reports the one-lot book's return on gross exposure and its rupee P&L. NSE's F&O
+file before Jul 2024 has no lot size: lots for 2019 – Jul 2024 are estimated from traded value
+and contracts on each contract's busiest day (within 1%: INFY 302 vs 300, SBIN 1,504 vs 1,500),
+used only as weights (scripts/legacy_lots.py). Without them the first five years of the
+one-lot book were silently zero.
+
+**Found by reconciling rupees between the engines** (ledger legs vs simulator, ₹50.3 L of P&L,
+Jul 2024 – Nov 2026): (1) on 1 Nov 2024 NSE revised the lots of six contracts already trading
+(PETRONET 3,000 → 1,500, COFORGE 150 → 75, …) with no price change. A held position keeps its
+shares; the simulator re-read the lot daily and booked the wrong quantity. It now carries the
+quantity, changed only by a split/bonus or a roll; tickets show the quantity and, when NSE's
+current lot differs, what it is in today's lots. (2) An exit decided at the previous close now
+takes precedence over a same-day forced close of a stock leaving F&O (AARTIIND, Jul 2025).
+After the fixes the engines agree to the rupee (difference 0) as well as in holdings.
+
+**Found in the nightly refresh:** (3) the refresh appended Yahoo's still-forming bar for the
+current day (220 rows dated the next session); every Pragyam computation is now capped at the
+session being built. (4) Yahoo sometimes skips a day in the middle of a series while already
+showing the next; the NSE fill only filled gaps at the end, so 31 stocks lost a level. The fill
+now covers any missing session in the last 10 weekdays. (5) Renamed stocks are refreshed under
+their current names.
+
+**Holidays.** NSE's 2025–26 holiday circular dates (from the option-hub repo's table) match
+VAAYDO's own derivation on all 29 dates; 2027 dates are carried as provisional and the refresh
+warns until NSE's circular replaces them.
+
+**Results.** One lot of every name: Sharpe 0.85, 7.1% a year on gross, worst drawdown −14.2%,
+one losing year of eight; net long 12% of gross on average, beta 0.04, Sharpe 0.81 without it.
+Equal rupees (reference): 0.76, −17.4%.
+**Checks:** data audit clean; 0 leg issues in 2,198; past runs identical to the full replay
+(stocks and index desk, nothing read after the run date); holdings identical at 97/97
+checkpoints; rupee P&L identical; 30 invariants of the screen, tickets, book and index desk
+hold; the nightly refresh rebuilds every shipped file exactly.

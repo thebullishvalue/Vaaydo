@@ -80,37 +80,32 @@ def load(symbols: list[str] | None = None, refresh: bool = False, until=None) ->
     return fill_from_nse(h, symbols, until)
 
 
-def fill_from_nse(h: pd.DataFrame, symbols=None, until=None, max_sessions: int = 5) -> pd.DataFrame:
-    """Yahoo posts a session's bar hours after NSE, and sometimes skips one. For each wanted
-    symbol whose history stops before `until`, append the missing sessions (up to 5) from NSE's
-    own equity bhavcopy. Recent Yahoo bars are unadjusted relative to NSE's (adjustments apply to
-    older history), so NSE's raw OHLC joins the series without a jump."""
+def fill_from_nse(h: pd.DataFrame, symbols=None, until=None, lookback: int = 10) -> pd.DataFrame:
+    """Yahoo posts a session's bar hours after NSE, and sometimes skips one in the middle of a
+    series. For every NSE session in the last `lookback` weekdays up to `until`, any wanted symbol
+    without a bar that day gets NSE's own bar from the equity bhavcopy (a file whose own trade date
+    is that day: holidays return nothing). Bars after `until` (a still-forming day) are dropped.
+    Recent Yahoo bars match NSE's raw prices (adjustments apply to older history)."""
     if until is None or h is None or h.empty:
         return h
-    from datetime import timedelta
     from . import equity
     until = pd.Timestamp(until)
+    h = h[h["date"] <= until]
     want = set(symbols) if symbols else set(h["symbol"])
-    last = h.groupby("symbol")["date"].max()
-    behind = {s: d for s, d in last.items() if s in want and d < until}
-    if not behind:
-        return h
-    start = min(behind.values())
-    days, d = [], start + timedelta(days=1)
-    while d <= until:
-        if d.weekday() < 5:
-            days.append(d)
-        d += timedelta(days=1)
+    have = set(zip(h["date"], h["symbol"]))
     rows = []
-    for d in days[-max_sessions * 2:]:
+    for d in pd.bdate_range(end=until, periods=lookback):
+        miss = [x for x in want if (d, x) not in have]
+        if not miss:
+            continue
         e = equity.fetch_day(d.date())
         if e is None or e.empty:
-            continue
-        e = e[e["symbol"].isin(behind) & (e["close"] > 0)]
-        e = e[[pd.Timestamp(d) > behind[s] for s in e["symbol"]]]
+            continue                                   # not a session
+        e = e[e["symbol"].isin(miss) & (e["close"] > 0)]
         if len(e):
-            rows.append(pd.DataFrame({"date": pd.Timestamp(d), "symbol": e["symbol"], "open": e["open"], "high": e["high"],
-                                      "low": e["low"], "close": e["close"], "adj": e["close"], "volume": e["qty"]}))
+            rows.append(pd.DataFrame({"date": d, "symbol": e["symbol"].values, "open": e["open"].values,
+                                      "high": e["high"].values, "low": e["low"].values, "close": e["close"].values,
+                                      "adj": e["close"].values, "volume": e["qty"].values}))
     if not rows:
         return h
     out = pd.concat([h, *rows], ignore_index=True)

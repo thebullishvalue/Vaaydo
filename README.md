@@ -6,7 +6,7 @@ trades that follow come out as tickets: what to enter, exit and hold at the next
 in which contract, at what price, with a stop.
 
 > Long the stocks where the options crowd leans hardest to puts; short the ones where
-> it leans hardest to calls; equal rupees each side.
+> it leans hardest to calls; one lot of each.
 
 ## Two universes
 
@@ -37,20 +37,20 @@ in which contract, at what price, with a stop.
 | **System Data** | Track record 2019 – today, every closed trade since Jul 2024, exports, definitions. |
 
 **Historical Range** mode returns every closed trade whose signal fell in the range,
-month by month, and the track record over it. Sizing to your capital is optional: the
-screen is the same either way, and sizing only limits the book to the most extreme
-names that fit, long and short balanced.
+month by month, and the track record over it. There is no capital sizing: every
+position is one lot of its futures contract, and the book is the whole model book.
 
 ## The evidence, briefly (docs/RESEARCH_V6.md)
 
-| Book (1× gross, net of costs, 2019 – Nov 2026) | Sharpe | Return / yr | Volatility | Worst drawdown |
-|---|---|---|---|---|
-| model book, ~30 names | 0.76 | 5.5% | 7.3% | −17.4% |
-| 20 names | 0.69 | 5.7% | 8.3% | −15.8% |
-| 12 names | 0.80 | 8.4% | 10.6% | −16.0% |
-| 6 names | 0.36 | 5.4% | 14.7% | −21.0% |
+| Book (~30 names, on gross exposure, net of costs, 2019 – Nov 2026) | Sharpe | Return / yr | Volatility | Worst drawdown | Losing years |
+|---|---|---|---|---|---|
+| **one lot of every name** (what VAAYDO trades) | 0.85 | 7.1% | 8.3% | −14.2% | 1 of 8 |
+| equal rupees in every name (research reference) | 0.76 | 5.5% | 7.3% | −17.4% | 2 of 8 |
 
-A modest, market-neutral edge. Below ~12 names it is mostly stock-specific noise.
+Lots differ in rupee size, so the one-lot book is not exactly balanced: it has averaged 12%
+net long of gross (−4% to +28%), with a beta to NIFTY of 0.04; with that removed its Sharpe
+is 0.81. A modest edge from stock selection, not from the market. (2019 – Jul 2024 lot sizes
+are estimated from NSE's traded value and contracts, within 1%: NSE's file then had none.)
 Designed on 2024–25 and confirmed on 2019–22, which no design choice had seen. Flat in
 2023 – mid-2024. Expect losing years.
 

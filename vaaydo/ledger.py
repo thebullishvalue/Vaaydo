@@ -145,11 +145,10 @@ class Ledger:
     asof: pd.Timestamp | None = None
 
 
-def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None, notional: dict | None = None,
-           cap: float | None = None, mult: float = STOP_MULT, fno_ban: frozenset | None = None) -> Ledger:
+def replay(M: Market, dates, model: dict, ratios: dict, mult: float = STOP_MULT,
+           fno_ban: frozenset | None = None) -> Ledger:
     """dates: decision sessions, ascending. model: {date: {symbol: side}}. ratios:
-    {(symbol, side): Series} Pragyam stop ratio. With cap: capital-limited book (most
-    extreme first, long/short notional balanced), else the full model book."""
+    {(symbol, side): Series} Pragyam stop ratio. The model book, one lot of every name."""
     held: dict[str, Position] = {}
     banned: dict[str, int] = {}
     led = Ledger()
@@ -228,27 +227,7 @@ def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None,
             if s not in exits and s not in keep:
                 exits[s] = "signal left the band"
         cand = [s for s, sd in m.items() if s not in keep and banned.get(s) != sd and M.active.get((d, s)) is not None]
-        if cap is None:
-            add = cand
-        else:
-            # a position's rupee size on THIS day: price x lot of the contract it trades in
-            nv = (lambda s, d=d: notional(d, s)) if callable(notional) else (lambda s: notional.get(s, np.nan))
-            size = {s: nv(s) for s in set(keep) | set(cand)}
-            e_ = (ext or {}).get(d, {})
-            used = sum(size[s] if np.isfinite(size[s]) else 0.0 for s in keep)
-            nl = sum(size[s] for s, p in keep.items() if p.side > 0 and np.isfinite(size[s]))
-            ns = sum(size[s] for s, p in keep.items() if p.side < 0 and np.isfinite(size[s]))
-            L = sorted([s for s in cand if m[s] > 0 and np.isfinite(size[s])], key=lambda s: -e_.get(s, 0))
-            S = sorted([s for s in cand if m[s] < 0 and np.isfinite(size[s])], key=lambda s: -e_.get(s, 0))
-            add = []
-            while L or S:
-                pick_long = bool((nl <= ns and L) or not S)
-                s = L.pop(0) if pick_long else S.pop(0)
-                if used + size[s] > cap:
-                    continue
-                add.append(s)
-                used += size[s]
-                nl, ns = (nl + size[s], ns) if pick_long else (nl, ns + size[s])
+        add = cand                          # one lot of every name the model holds: no capital limit
         # exits fill at the next open: record them now with the leg still open
         for s, why in exits.items():
             p = held[s]

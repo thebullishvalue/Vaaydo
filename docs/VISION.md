@@ -40,7 +40,7 @@ score is the 10-session average of that positioning, ranked across all F&O stock
 * **Exit** when it leaves that band, or on its trailing stop.
 * **Ready** (watchlist) a stock in the 5–15% band that is moving toward an entry.
 
-Trades are stock futures, long ▲ and short ▼ in equal rupees. Options are where the
+Trades are stock futures, long ▲ and short ▼, one lot of each. Options are where the
 signal comes from, not how it is traded: options as the instrument lost to their own
 spreads in every test.
 
@@ -49,7 +49,7 @@ spreads in every test.
 | Tab | What it shows |
 |---|---|
 | **Signals** | the signal board: new ▲ and ▼ today, exits today, each as a ticket with its reason, plus the open book with roll history |
-| **Book** | every open position: legs per contract (entries, rolls, lot changes), realised and open P&L, trailing stop, risk; optional sizing to your capital |
+| **Book** | every open position, one lot each: legs per contract (entries, rolls, quantity through lot revisions), realised and open P&L, trailing stop, risk |
 | **Watchlist** | names closest to firing, nearest first |
 | **Flow** | the market board: breadth, sectors, futures build-up census, option flow, unusual activity |
 | **Contracts** | the option-contract scanner: most active, OI gainers/losers, buyers/writers opening, unusual volume, surges |

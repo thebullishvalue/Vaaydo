@@ -125,10 +125,12 @@ def refresh(progress=print) -> None:
     Fb = pd.read_parquet(FUT, columns=["date", "symbol"])
     Fb["date"] = pd.to_datetime(Fb["date"])
     recent = sorted(Fb["date"].unique())[-60:]
-    syms = sorted(set(Fb.loc[Fb["date"].isin(recent), "symbol"]))   # stocks in F&O now (not ones that left)
+    from . import renames as RN
+    ren = RN.detect(pd.read_parquet(FUT))
+    syms = sorted({ren.get(x, x) for x in Fb.loc[Fb["date"].isin(recent), "symbol"]})   # in F&O now, current names
     from .data import history
     h = history.load(syms, refresh=True, until=new_days[-1])         # lagging Yahoo bars filled from NSE
-    newp = pragyam_rows(syms, pd.Timestamp(new_days[0]), history_df=h)
+    newp = pragyam_rows(syms, pd.Timestamp(new_days[0]), until=pd.Timestamp(new_days[-1]), history_df=h)
     have = set(newp.loc[pd.to_datetime(newp["date"]) == pd.Timestamp(new_days[-1]), "symbol"]) if len(newp) else set()
     lost = sorted(set(syms) - have)
     if lost:
@@ -185,3 +187,9 @@ def refresh_index(new_days, progress=print) -> None:
     except Exception:
         pass
     progress("index desk data refreshed")
+    # the holiday list drives sessions-to-expiry beyond the last file: warn while it is provisional
+    hol = pd.read_csv(ROOT / "nse_holidays.csv")
+    prov = hol[hol["source"].astype(str).str.startswith("PROVISIONAL")]
+    nxt_year = str(date.today().year + (1 if date.today().month == 12 else 0))
+    if len(prov) or not hol["date"].astype(str).str.startswith(nxt_year).any():
+        progress(f"WARNING: data/nse_holidays.csv has {len(prov)} provisional dates; update it from NSE's holiday circular")

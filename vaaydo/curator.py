@@ -3,7 +3,6 @@ One run of the screener, for any session since the bundle starts.
 
     run(asof) -> Run        every F&O stock's state and readings, the model book with
                             leg-by-leg history, closed trades, and the day's option contracts
-    sized(run, capital, leverage) -> (positions, legs)    the same book cut to your capital
 
 States, per stock, at the close of `asof`:
     ▲ NEW / ▼ NEW     the score entered the top / bottom 5% today: enter at the next open
@@ -39,7 +38,6 @@ class Run:
     scores: pd.DataFrame
     market: object
     daily: dict
-    ext: dict
     ratios: dict
     dates: list
     notes: list = field(default_factory=list)
@@ -134,7 +132,6 @@ def run(asof: date | None = None, progress=None) -> Run:
         for s_, (act, why) in list(led.decisions.items()):
             if act == "ENTER" and s_ in nb:
                 led.decisions[s_] = ("ENTER", f"in the F&O ban on {nb_date:%d %b}: no fresh position until it lifts")
-    ext = {d: (g.set_index("symbol")["pct"] - 0.5).abs().to_dict() for d, g in sc.groupby("date")}
 
     say(70, "reading option flow")
     # ── per-stock screen ──
@@ -226,7 +223,7 @@ def run(asof: date | None = None, progress=None) -> Run:
                            exit_contract=p.legs[-1].contract.date(), legs=len(p.legs), why=why,
                            sessions=int(((M.cal >= p.legs[0].entry_date) & (M.cal <= p.legs[-1].exit_date)).sum()),
                            ret=_trade_return(p, cost)))
-    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ext, ratios, dates, notes, ban, (nb_date, nb), ren_last)
+    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ratios, dates, notes, ban, (nb_date, nb), ren_last)
 
 
 def _roll_plan(M, A, s, contract) -> tuple:
@@ -309,31 +306,10 @@ def _positions(M, led, A, screen: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
             first_px=first_px, first_adj=first_adj,
             leg_since=leg_since.date() if leg_since is not None else None, leg_px=leg_px,
             roll_on=roll_on.date() if roll_on is not None else None, roll_what=roll_what,
+            lot_now=int(M.lot.get((A, s, contract), 0) or 0) if contract is not None else 0,   # the exchange's lot today
             industry=sr.get("industry", "—"), score=sr.get("score", np.nan)))
     pos = pd.DataFrame(rows)
     if len(pos):
         pos["o"] = pos["action"].map({"EXIT": 0, "ENTER": 1, "HOLD": 2})
         pos = pos.sort_values(["o", "side", "symbol"]).drop(columns="o").reset_index(drop=True)
     return pos, pd.DataFrame(legrows)
-
-
-def sized(r: Run, capital: float, leverage: float = 1.0, universe: frozenset | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """The model book cut to your capital (and universe): the same ledger rules,
-    capital-limited. The signal stays cross-sectional over every F&O stock; the universe
-    only limits which of those names you trade."""
-    A = r.asof
-    daily = r.daily if universe is None else {d: {s: v for s, v in m.items() if s in universe} for d, m in r.daily.items()}
-    M = r.market
-
-    def notional(d, s):
-        """Rupee size on day d: close x lot of the contract an order decided that day fills in
-        (held names: their current contract)."""
-        e = M.fill_contract.get((d, s)) or M.active.get((d, s))
-        if e is None:
-            return np.nan
-        c, lot = M.px(d, s, e), M.lot.get((d, s, e), 0)
-        return c * lot if np.isfinite(c) and lot else np.nan
-
-    led = LG.replay(r.market, r.dates, daily, r.ratios, ext=r.ext, notional=notional, cap=capital * leverage,
-                    fno_ban=getattr(r, "ban", None))
-    return _positions(r.market, led, A, r.screen)

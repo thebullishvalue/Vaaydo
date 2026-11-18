@@ -43,18 +43,3 @@ def test_replay_hysteresis_and_sides():
             assert book.get(s) and book[s].side == 1
         if p <= S.ENTER:
             assert book.get(s) and book[s].side == -1
-
-
-def test_personal_replay_respects_capital_and_balance():
-    sc = S.scores(_inputs())
-    daily = {}
-    S.replay(sc, daily=daily)
-    ext = {d: (g.set_index("symbol")["pct"] - .5).abs().to_dict() for d, g in sc.groupby("date")}
-    syms = set(sc.symbol)
-    notional = {s: 1.0 for s in syms}
-    prev, now = S.personal_replay(daily, ext, notional, notional, cap=4.0)
-    assert len(now) <= 4
-    sides = list(now.values())
-    assert abs(sides.count(1) - sides.count(-1)) <= 1
-    model = daily[max(daily)]
-    assert all(model.get(s) == sd for s, sd in now.items())   # never holds a name the model doesn't

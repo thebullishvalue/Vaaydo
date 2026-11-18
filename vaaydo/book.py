@@ -89,6 +89,16 @@ class Prices:
         F = F.set_index(["date", "symbol", "expiry"])
         self.o = F["open"]
         self.c = F["close"]
+        # rupee weight of one lot: the exchange's lot where the file has one, else the estimate
+        # (lot_w, 2019 - Jul 2024: NSE's old file carries no lot). Never used to detect corporate actions.
+        lw = F["lot"].where(F["lot"] > 0) if "lot" in F else pd.Series(np.nan, index=F.index)
+        if "lot_w" in F:
+            lw = lw.fillna(F["lot_w"])
+        self.lots = lw.to_dict()
+
+    def lot(self, d, s, e) -> float:
+        v = self.lots.get((d, s, e))
+        return float(v) if v is not None and v > 0 else np.nan
 
     def px(self, d, s, e, which="close"):
         try:
@@ -100,8 +110,11 @@ class Prices:
 
 def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, stops: pd.DataFrame | None = None,
              stop_mult=2.0, start=None, end=None, membership: dict | None = None, trail: bool = False,
-             ban_after_stop: bool = True, fno_ban: frozenset | None = None) -> pd.DataFrame:
-    """scores: date, symbol, score (higher = long). Returns a daily frame of book returns."""
+             ban_after_stop: bool = True, fno_ban: frozenset | None = None, attrib: dict | None = None) -> pd.DataFrame:
+    """scores: date, symbol, score (higher = long). Returns a daily frame:
+      ret        equal rupees in every name: (mean long return + mean short return), the research measure
+      ret_lot    ONE LOT of every name (what VAAYDO trades): rupee P&L after costs / gross rupee exposure
+      pnl_rs     one-lot rupee P&L before costs (reconciles with the live ledger's legs)"""
     cost = futures_cost() if cost is None else cost
     half = cost / 2
     scores = scores.dropna(subset=["score"]).copy()
@@ -144,8 +157,21 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
             want = {s: sd for s, sd in want.items() if banned.get(s) != sd or s in book}
         # 2) execute at open nxt; P&L for the day nxt
         pnl = {1: [], -1: []}
+        lotw = []                 # (return after costs, rupee weight) per position for the one-lot book
+        lotside = []              # signed rupee weights: the one-lot book's net exposure
+        rs = 0.0                  # one-lot rupee P&L before costs
         trades = 0.0
         new_book = {}
+
+        def book_lot(side, r_net, gross_rs, weight_rs, sym=None):
+            nonlocal rs
+            if attrib is not None and sym is not None and np.isfinite(gross_rs):
+                attrib[(sym, nxt)] = attrib.get((sym, nxt), 0.0) + gross_rs
+            if np.isfinite(weight_rs) and weight_rs > 0:
+                lotw.append((r_net, weight_rs))
+                lotside.append(side * weight_rs)
+            if np.isfinite(gross_rs):
+                rs += gross_rs
         for s in set(book) | set(want):
             held = book.get(s)
             w = want.get(s)
@@ -160,6 +186,9 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                 if f_d and held.get("stop"):            # close of d is post-adjustment: rescale levels
                     held = dict(held, best=held["best"] * f_d, stop=held["stop"] * f_d)
                 f_n = P.ca.get((nxt, s), 1.0)
+                if f_n != 1.0 and np.isfinite(held.get("qty", np.nan)):
+                    held = dict(held, qty=round(held["qty"] / f_n))   # split/bonus: more shares, same position
+                q = held.get("qty", np.nan)          # shares held: fixed through an exchange lot revision
                 c_prev_adj = c_prev * f_n if np.isfinite(c_prev) else c_prev
                 if trail and held.get("stop") and np.isfinite(c_prev):
                     best = max(held["best"], c_prev) if held["side"] > 0 else min(held["best"], c_prev)
@@ -170,13 +199,17 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                 if (nxt, s) not in P.present and nxt < e:
                     # the contract stopped printing before expiry (merger, rename): closed at its last print
                     pnl[held["side"]].append(-half)
+                    book_lot(held["side"], -half, 0.0, q * c_prev if np.isfinite(c_prev) else np.nan, sym=s)
                     trades += 1
                     continue
                 act_n = P.active.get((nxt, s))
                 if act_n is None and P.cal_pos.get(e, 10 ** 9) - P.cal_pos.get(nxt, 0) <= P.roll_before \
-                        and np.isfinite(c_now) and np.isfinite(c_prev):
+                        and np.isfinite(c_now) and np.isfinite(c_prev) and w == held["side"] and not stopped:
+                    # (an exit already decided fills at this open instead: handled below)
                     # roll due, no later contract listed (leaving F&O): closed at this close, like a roll
-                    pnl[held["side"]].append(held["side"] * (c_now / c_prev_adj - 1) - half)
+                    ra = held["side"] * (c_now / c_prev_adj - 1)
+                    pnl[held["side"]].append(ra - half)
+                    book_lot(held["side"], ra - half, held["side"] * q * (c_now - c_prev_adj), q * c_prev_adj, sym=s)
                     trades += 1
                     continue
                 if w == held["side"] and not stopped:
@@ -184,10 +217,13 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                         new_book[s] = held
                         continue
                     r = held["side"] * (c_now / c_prev_adj - 1)
+                    lt = q
+                    g_rs = held["side"] * lt * (c_now - c_prev_adj)
                     act = P.active.get((nxt, s))
                     if act is not None and act != e and fno_ban and (nxt, s) in fno_ban:
                         if nxt >= e:                            # ban through expiry: settles, position closes
                             pnl[held["side"]].append(r - half)
+                            book_lot(held["side"], r - half, g_rs, lt * c_prev_adj, sym=s)
                             trades += 1
                             continue
                         act = None                              # hold the current contract, roll later
@@ -198,12 +234,15 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                         if held.get("stop") and np.isfinite(c_new) and np.isfinite(c_now) and c_now > 0:
                             g = c_new / c_now                   # trail in the new contract's terms
                             held = dict(held, best=held["best"] * g, stop=held["stop"] * g)
-                        held = dict(held, expiry=act)
+                        held = dict(held, expiry=act, qty=P.lot(nxt, s, act))   # the new contract's lot
                     pnl[held["side"]].append(r)
+                    book_lot(held["side"], r, g_rs, lt * c_prev_adj, sym=s)
                     new_book[s] = held
                 else:                                           # exit at the open
                     if np.isfinite(o) and np.isfinite(c_prev):
-                        pnl[held["side"]].append(held["side"] * (o / c_prev_adj - 1) - half)
+                        rx = held["side"] * (o / c_prev_adj - 1)
+                        pnl[held["side"]].append(rx - half)
+                        book_lot(held["side"], rx - half, held["side"] * q * (o - c_prev_adj), q * c_prev_adj, sym=s)
                     trades += 1
                     if stopped:
                         banned[s] = held["side"]
@@ -227,12 +266,17 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                         k = 1 + stop_mult * (base - 1)
                         stop = o * k
                 pnl[w].append(w * (c_now / o - 1) - half)
+                lt = P.lot(nxt, s, e)
+                book_lot(w, w * (c_now / o - 1) - half, w * lt * (c_now - o), lt * o, sym=s)
                 trades += 1
-                new_book[s] = dict(side=w, expiry=e, stop=stop, k=k, best=o)
+                new_book[s] = dict(side=w, expiry=e, stop=stop, k=k, best=o, qty=lt)
         book = new_book
         nl, ns = len(pnl[1]), len(pnl[-1])
         ret = (np.mean(pnl[1]) if nl else 0.0) + (np.mean(pnl[-1]) if ns else 0.0)
-        rows.append(dict(date=nxt, ret=ret, names=",".join(sorted(f"{k}{'+' if v['side'] > 0 else '-'}" for k, v in book.items())),
+        wsum = sum(w for _, w in lotw)
+        ret_lot = sum(r_ * w for r_, w in lotw) / wsum if wsum > 0 else 0.0
+        net_lot = sum(lotside) / wsum if wsum > 0 else 0.0
+        rows.append(dict(date=nxt, ret=ret, ret_lot=ret_lot, net_lot=net_lot, pnl_rs=rs, names=",".join(sorted(f"{k}{'+' if v['side'] > 0 else '-'}" for k, v in book.items())),
                          n_long=sum(v["side"] == 1 for v in book.values()),
                          n_short=sum(v["side"] == -1 for v in book.values()), trades=trades))
     return pd.DataFrame(rows).set_index("date")

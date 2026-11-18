@@ -31,6 +31,7 @@ if "theme" not in st.session_state:
     st.session_state["theme"] = "dark"
 inject_css(theme=st.session_state["theme"])
 TRACK = "data/track_record.parquet"
+TRACK_BOOKS = (("one_lot", "One lot of every name (what VAAYDO trades)"), ("equal_rupees", "Equal rupees in every name (research)"))
 
 
 # ── formatting ──────────────────────────────────────────────────────────────
@@ -99,13 +100,6 @@ with st.sidebar:
                               key="sb_start", label_visibility="collapsed")
         asof = c2.date_input("End", today, min_value=date(2024, 7, 8), max_value=today, key="sb_end",
                              label_visibility="collapsed")
-    size_on, capital, leverage = False, None, 1.0
-    if kind == STOCKS:
-        st.markdown('<div class="sidebar-title">Sizing (optional)</div>', unsafe_allow_html=True)
-        size_on = st.toggle("Size to my capital", value=False, key="sb_size")
-    if size_on:
-        capital = st.number_input("Capital (₹)", 500_000, 500_000_000, 8_500_000, step=500_000, key="sb_capital")
-        leverage = st.select_slider("Gross exposure ÷ capital", [0.5, 0.75, 1.0, 1.25, 1.5, 2.0], value=1.0, key="sb_lev")
     run_clicked = st.button(("RUN DESK" if kind == INDICES else "RUN SCREENER") if mode == "Single Date" else "RUN HARVEST",
                             type="primary", width="stretch")
     st.markdown('<div class="sidebar-title">Appearance</div>', unsafe_allow_html=True)
@@ -197,9 +191,9 @@ def landing():
         ("Risk", "Pragyam", "Every position carries a trailing stop at 1.5× Pragyam's calibrated stop distance, decided on "
          "the close and executed at the next open, and Pragyam's 80% ten-session range.",
          [("Stop", "trailing, 1.5×"), ("After a stop", "out until reset"), ("Range", "80%, 10 sessions")]),
-        ("Book", "Positions", "Long and short in equal rupees. Entries at the next open in the contract active that day, "
+        ("Book", "Positions", "One lot of every name, long and short. Entries at the next open in the contract active that day, "
          "rolled three sessions before expiry; every leg kept, with its own lot size.",
-         [("Balance", "market-neutral"), ("Rolls", "T−3 sessions"), ("Corporate actions", "exchange factor")]),
+         [("Size", "one lot each"), ("Rolls", "T−3 sessions"), ("Corporate actions", "exchange factor")]),
     ]
     for col, (k, name, body, specs) in zip(cols, parts):
         with col:
@@ -247,10 +241,7 @@ uname = meta.get("universe", "All F&O stocks")
 scr = uni_filter(r.screen, members)
 pos = uni_filter(r.positions, members)
 legs = uni_filter(r.legs, members)
-book_pos, book_legs = pos, legs
-if size_on and capital:
-    sp, sl = curator.sized(r, capital, leverage, members)
-    book_pos, book_legs = sp, sl
+book_pos, book_legs = pos, legs          # one lot of every position: no capital sizing
 T = track()
 if meta.get("mode") == "Single Date":
     T = T[T.index <= r.asof]          # a past-dated run shows only what was known that evening
@@ -271,13 +262,6 @@ if meta.get("asof") and pd.Timestamp(meta["asof"]) > r.asof:
 if members is None and uname != "All F&O stocks":
     notices.append(dict(kind="warning", title="Universe list unavailable",
                         body="The index constituents could not be fetched; showing all F&O stocks."))
-if size_on and capital and len(held) < 10:
-    k6, k12 = T["k6"], T["k12"]
-    sr = lambda x: x.mean() / x.std() * np.sqrt(252)
-    notices.append(dict(kind="warning", title="Book too small to be the strategy",
-                        body=f"{len(held)} names at {inr(capital)} and {leverage:g}×. Six names backtested at Sharpe "
-                             f"{sr(k6):.2f}, twelve at {sr(k12):.2f}: the edge needs enough names for stock-specific "
-                             f"noise to wash out."))
 nb_date, nb = getattr(r, "ban_next", (None, None))
 if nb:
     hit = [s for s in nb if members is None or s in members]
@@ -300,6 +284,17 @@ def traded_as(sym: str, when) -> str:
 
 def fut(c) -> str:
     return f"FUT {pd.Timestamp(c):%d %b %y}" if c is not None and not pd.isna(c) else "—"
+
+
+def qty_text(p) -> str:
+    """Shares held. One lot at entry; if NSE has since revised the contract's lot, the same
+    shares are a different number of today's lots (the position itself does not change)."""
+    q, now = int(p["lot"] or 0), int(p.get("lot_now") or 0)
+    if not q:
+        return "—"
+    if now and now != q:
+        return f"{q:,} (= {q / now:g} lots of {now:,} now)"
+    return f"{q:,} (1 lot)"
 
 
 def tickets(df: pd.DataFrame, kind: str):
@@ -328,7 +323,7 @@ def tickets(df: pd.DataFrame, kind: str):
             "Signal": fmt_date(p["signal"]),
             "Opened": opened,
             "Holding now": now_in,
-            "Lot": int(p["lot"]) if p["lot"] else "—",
+            "Quantity": qty_text(p),
             "Last": px(p["last"]),
             "P&L (all legs, before charges)": "—" if enter else inr(p["pnl"], True),
             "Return": "—" if enter else pct(p["pnl_pct"]),
@@ -355,7 +350,7 @@ def leg_table(lg: pd.DataFrame, sym: str):
     t = pd.DataFrame({
         "Leg": x["leg"], "Contract": [f"{traded_as(sym, d).replace(sym, '').strip(' ()') or sym} {fut(c)}"
                                       for c, d in zip(x["contract"], x["entry_date"])],
-        "Filled": fills, "Lot": x["lot"],
+        "Filled": fills, "Quantity": x["lot"],
         "Closed": [("open" if e is None or pd.isna(e) else f"{px(a)} · {fmt_date(e)}") for a, e in zip(x["exit_px"], x["exit_date"])],
         "How": x["status"], "P&L": [inr(v, True) for v in x["pnl"]]})
     ui.render_data_table(t, show_index=False, max_height=260)
@@ -456,16 +451,13 @@ if meta.get("mode") == "Single Date":
                                      "Close the current contract and open the next one at that session's close. "
                                      "Known in advance: three sessions before expiry.", icon="move-horizontal")
             ui.render_data_table(pd.DataFrame({
-                "Symbol": due["symbol"], "Side": due["side"], "Lot": due["lot"],
+                "Symbol": due["symbol"], "Side": due["side"], "Quantity": due["lot"],
                 "Close": [fut(c) for c in due["contract"]], "Then": due["roll_what"],
                 "Last": [px(v) for v in due["last"]]}), show_index=False, label_col="Symbol", max_height=320)
         ui.render_section_header("Holding", "Open positions: the contract first traded, the contract held now, P&L across "
                                  "every leg, today's stop and the next roll.", icon="layers")
         if len(held):
             tickets(held[held["action"] == "HOLD"], "HOLD")
-        if size_on and capital:
-            st.markdown(f'<div class="panel-copy">Sized to {inr(capital)} at {leverage:g}× — the same rules, limited to '
-                        f'the most extreme names that fit, long and short balanced.</div>', unsafe_allow_html=True)
 
     with tabs[1]:
         gl = held.loc[held["side"] == "LONG", "notional"].sum() if len(held) else 0
@@ -571,16 +563,18 @@ if meta.get("mode") == "Single Date":
     with tabs[6]:
         sr = lambda x: x.mean() / x.std() * np.sqrt(252)
         ui.render_section_header(f"Track record, 2019 – {r.asof:%d %b %Y}", "Backtest on real NSE futures prices: next-open fills, all "
-                                 "charges and slippage, trailing stops, rolls, corporate actions. Returns on gross exposure.",
+                                 "charges and slippage, trailing stops, rolls, corporate actions, F&O bans, renames. Returns on gross "
+                                 "exposure: one lot of every name (lots differ in rupee size, so the book is not exactly balanced), "
+                                 "and, for reference, equal rupees in every name.",
                                  icon="trending-up")
         fig = go.Figure()
-        for col, nm in (("model_30", "model book (~30)"), ("k20", "20 names"), ("k12", "12 names"), ("k6", "6 names")):
+        for col, nm in TRACK_BOOKS:
             fig.add_trace(go.Scatter(x=T.index, y=(1 + T[col]).cumprod(), mode="lines", name=nm))
         fig.add_vrect(x0="2023-01-01", x1="2024-06-30", fillcolor=chart_color("amber"), opacity=0.08, line_width=0)
         fig.update_layout(**chart_layout(height=340))
         ui.render_chart_panel(fig, "track", units="growth of ₹1")
         summ = []
-        for col, nm in (("model_30", "Model book (~30)"), ("k20", "20 names"), ("k12", "12 names"), ("k6", "6 names")):
+        for col, nm in TRACK_BOOKS:
             x = T[col]
             eq = (1 + x).cumprod()
             yrs = (1 + x).groupby(x.index.year).prod() - 1
@@ -666,7 +660,7 @@ else:
     with tabs[2]:
         x = T[(T.index >= s0) & (T.index <= s1)]
         fig = go.Figure()
-        for col, nm in (("model_30", "model book (~30)"), ("k20", "20 names"), ("k12", "12 names"), ("k6", "6 names")):
+        for col, nm in TRACK_BOOKS:
             fig.add_trace(go.Scatter(x=x.index, y=(1 + x[col]).cumprod(), mode="lines", name=nm))
         fig.update_layout(**chart_layout(height=340))
         ui.render_chart_panel(fig, "hr-track", units="growth of ₹1 over the range")
