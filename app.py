@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import html
 import warnings
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -23,7 +23,7 @@ from vaaydo import curator, index_desk, signal
 import ui.desk as desk_view
 from vaaydo.universe import UNIVERSES, constituents
 
-VERSION = "7.3.0"
+VERSION = "7.3.1"
 STOCKS, INDICES = "F&O Stocks", "Indices · NIFTY & BANKNIFTY"
 st.set_page_config(page_title="VAAYDO | F&O Trade Screener", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
@@ -206,78 +206,88 @@ meta = st.session_state.get("run_meta", {})
 
 
 def landing():
+    """Cold start, as every member of the family opens: the masthead, the claim and one line on
+    what to do, then Coverage, System and What a Run Returns, in the family's components. The
+    numbers a trader asks first (book size, money, orders, the record) are the system panels'
+    spec rows, computed from the track record rather than typed."""
+    ui.render_header("VAAYDO", "F&O Trade Screener · Option Positioning · Stock Futures")
+    run_error_state()
     st.markdown("""<div class="lede">
   <div class="lede-claim">Every NSE F&amp;O stock, screened each evening on where its options market is positioned —
     and the futures trades that follow from it, as tickets.</div>
-  <div class="lede-cta">Two universes: <strong>F&amp;O Stocks</strong>, where the trades are, and <strong>Indices</strong>,
-    the NIFTY and BANKNIFTY desk. Pick one, a mode and a date in the rail, then <strong>Run</strong>.</div>
+  <div class="lede-cta">Pick a universe, a mode and a date in the rail, then <strong>Run</strong>.</div>
 </div>""", unsafe_allow_html=True)
     T = track()
     x = T["one_lot"]
     eq = (1 + x).cumprod()
     yrs = (1 + x).groupby(x.index.year).prod() - 1
-    ui.render_section_header("What It Takes, What to Expect", "One lot of every name the model holds; no capital sizing. "
-                             "A run shows the exact book and its margin.", icon="target")
-    ui.render_kpi_strip([
-        dict(label="Positions", value="≈ 30", subtext="long and short stock futures, one lot each"),
-        dict(label="Money it takes", value="≈ ₹2 Cr", subtext="gross contract value; margin ≈ ₹40–50 L with your broker"),
-        dict(label="Each evening", value="1–4 orders", subtext="entries and exits at the next open; rolls once a month"),
-        dict(label="Track record 2019 – today", value=f"Sharpe {x.mean() / x.std() * np.sqrt(252):.2f}",
-             subtext=f"{x.mean() * 252:.1%} a year on gross · worst drawdown {(eq / eq.cummax() - 1).min():.0%} · "
-                     f"{int((yrs < 0).sum())} losing year of {len(yrs)}"),
-        dict(label="Per trade", value="≈ 1 in 2 wins", subtext="median hold 11 sessions; the edge is small and needs every name"),
-    ], key="landing-what")
+    sharpe, ret = x.mean() / x.std() * np.sqrt(252), x.mean() * 252
+    worst = (eq / eq.cummax() - 1).min()
     ui.render_section_header("Coverage", icon="layers")
     ui.render_kpi_strip([
-        dict(label="Universe", value="~220", subtext="every NSE single-stock F&O underlying, every session"),
-        dict(label="Readings per stock", value="30+", subtext="option positioning, option flow, futures flow, levels, delivery, risk"),
-        dict(label="History", value="Jul 2024 →", subtext="any session since; research on 2019 – today"),
+        dict(label="F&O Stocks", value="~220", subtext="every NSE single-stock F&O underlying, every session; "
+                                                       "index lists filter it"),
+        dict(label="Index Desk", value="2", subtext="NIFTY and BANKNIFTY: chain, gamma, volatility, breadth, "
+                                                    "participants; a market read, no index trades"),
+        dict(label="History", value="Jul 2024 →", subtext="any session since; the research on 2019 – today"),
     ], max_cols=3, key="landing-cov")
     ui.render_section_header("System", icon="cpu")
     cols = st.columns(3, gap="small")
     parts = [
-        ("Signal", "Option positioning", "When the options crowd leans hardest to puts on a stock, it has tended to beat the "
-         "other F&O stocks over the following weeks; hardest to calls, it has lagged. Ten-session score, ranked across "
-         "every F&O stock.", [("Enter", "top / bottom 5%"), ("Hold", "inside 15%"), ("Instrument", "stock futures")]),
-        ("Risk", "Pragyam", "Every position carries a trailing stop at 1.5× Pragyam's calibrated stop distance, decided on "
-         "the close and executed at the next open, and Pragyam's 80% ten-session range.",
-         [("Stop", "trailing, 1.5×"), ("After a stop", "out until reset"), ("Range", "80%, 10 sessions")]),
-        ("Book", "Positions", "One lot of every name, long and short. Entries at the next open in the contract active that day, "
-         "rolled three sessions before expiry; every leg kept, with its own lot size.",
-         [("Size", "one lot each"), ("Rolls", "T−3 sessions"), ("Corporate actions", "exchange factor")]),
+        ("signal", "Option positioning", "Signal",
+         "When the options crowd leans hardest to puts on a stock, it has tended to beat the other F&O stocks "
+         "over the following weeks; hardest to calls, it has lagged. Ten-session score, ranked across every "
+         "F&O stock.",
+         [("Enter", "top / bottom 5%"), ("Hold", "inside 15%"), ("Instrument", "stock futures"),
+          ("Record, 2019 – today", f"Sharpe {sharpe:.2f} · {ret:.1%} a year")]),
+        ("risk", "Pragyam", "Risk",
+         "Every position carries a trailing stop at 1.5× Pragyam's calibrated stop distance, decided on the "
+         "close and executed at the next open, and Pragyam's 80% ten-session range.",
+         [("Stop", "trailing, 1.5×"), ("After a stop", "out until reset"), ("Range", "80%, 10 sessions"),
+          ("Worst drawdown", f"{worst:.0%} · {int((yrs < 0).sum())} losing year of {len(yrs)}")]),
+        ("book", "Positions", "Book",
+         "One lot of every name, long and short, no capital sizing. Entries at the next open in the contract "
+         "active that day, rolled three sessions before expiry; every leg kept, with its own lot size.",
+         [("Positions", "≈ 30, one lot each"), ("Money", "≈ ₹2 Cr gross · ₹40–50 L margin"),
+          ("Each evening", "1–4 orders"), ("Per trade", "≈ 1 in 2 wins · 11 sessions")]),
     ]
-    for col, (k, name, body, specs) in zip(cols, parts):
+    for col, (k, name, kicker, body, specs) in zip(cols, parts):
         with col:
-            with ui.panel(f"landing-{k}", name, context=k):
+            with ui.panel(f"landing-{k}", name, context=kicker):
                 st.markdown(f'<div class="panel-copy">{html.escape(body)}</div><div class="panel-specs">' +
                             "".join(f'<div class="lookback-row"><span class="lbl">{html.escape(a)}</span>'
                                     f'<span class="val">{html.escape(b)}</span></div>' for a, b in specs) + "</div>",
                             unsafe_allow_html=True)
     ui.render_section_header("What a Run Returns", icon="target")
-    out = (("Signals", "New ▲ and ▼, exits, and the open book as tickets."),
-           ("Book", "Every position leg by leg: entries, rolls, lot changes, P&L, stop."),
-           ("Watchlist", "The names closest to firing."),
-           ("Flow", "Breadth, sectors, futures build-up, option flow."),
-           ("Contracts", "The option-contract scanner."),
-           ("Screen", "Every stock with every reading."),
-           ("System Data", "Track record, evidence, exports, definitions."),
-           ("Indices desk", "NIFTY and BANKNIFTY market read: gamma, OI and walls, volatility, breadth, participants, "
-                            "rollover. It gives no index trades: none passed testing (its Evidence tab shows each)."))
+    out = (("Tonight's orders", "New ▲ and ▼, exits and rolls, as tickets: contract, quantity, stop."),
+           ("The book", "Every position leg by leg: entries, rolls, lot changes, P&L, stop; exposure by industry."),
+           ("The market around it", "The watchlist, breadth and build-up, option flow, the contract scanner and "
+                                    "every stock's readings."),
+           ("The record", "The track record 2019 – today, every closed trade since July 2024, exports and "
+                          "definitions."))
     st.markdown('<div class="outcome-grid">' + "".join(
         f'<div class="outcome"><div class="o-t">{html.escape(t)}</div><div class="o-d">{html.escape(d)}</div></div>'
         for t, d in out) + "</div>", unsafe_allow_html=True)
 
 
 def footer():
-    st.markdown(f'<div class="app-footer">VAAYDO v{VERSION} · NSE F&amp;O bhavcopy, end of day · '
-                f'decision support, not investment advice</div>', unsafe_allow_html=True)
+    """The family's footer: product, author, version, the time it was drawn (IST)."""
+    ist = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    st.markdown(f'<div class="app-footer"><div class="content">© {ist.year} <strong>VAAYDO</strong> &nbsp;·&nbsp; '
+                f'@thebullishvalue &nbsp;·&nbsp; v{VERSION} &nbsp;·&nbsp; {ist:%Y-%m-%d %H:%M:%S} IST</div></div>',
+                unsafe_allow_html=True)
 
 
-if st.session_state.get("run_error"):
-    ui.render_empty_state("The run could not complete", html.escape(st.session_state["run_error"]),
-                          eyebrow="Run failed", action_label="Try another date, or run again in a minute")
+def run_error_state() -> None:
+    """A failed run, said once: under the masthead on the cold start, under the command bar otherwise."""
+    if st.session_state.get("run_error"):
+        ui.render_empty_state("The run could not complete", html.escape(st.session_state["run_error"]),
+                              eyebrow="Run failed", action_label="Try another date, or run again in a minute")
+
+
 view = st.session_state.get("view")
 if view == INDICES and st.session_state.get("desk") is not None:
+    run_error_state()
     desk_view.render(st.session_state["desk"], st.session_state.get("desk_meta", {}))
     footer()
     st.stop()
@@ -335,6 +345,7 @@ if nb and not RANGE:
                                 if mine else "None of them is in VAAYDO's book or tonight's orders.")))
 for n in r.notes:
     notices.append(dict(kind="info", title="Note", body=html.escape(n)))
+run_error_state()
 ui.render_notice_rail(notices)
 
 
@@ -810,6 +821,8 @@ if meta.get("mode") == "Single Date":
             "Stop with no Pragyam level": "the last level within 5 sessions, else the day's median stop distance",
             "Book after next open": "positions kept plus tomorrow's new entries; exits leave at that open",
         }, header_left="Term", header_right="Meaning")
+        ui.render_note("NSE F&O bhavcopy, end of day. Decision support, not investment advice: futures can lose "
+                       "more than the margin posted.")
 
 # ── Historical Range ────────────────────────────────────────────────────────
 else:

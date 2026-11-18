@@ -11,6 +11,32 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.3.1] — 2026-11-18 — *The family's cold start*
+
+7.3.0 brought the analysis pages into the family and left the landing page as it was; set
+beside the others it was plainly a different product's front door. It is now built the way
+Sanket's, Tattva's and Nishkarsh's are.
+
+### Changed
+- **The masthead.** The page opened straight on its claim; it now opens, as every member's
+  does, on the wordmark (VAA·YDO in the accent) over its mono subtitle and a rule: "F&O Trade
+  Screener · Option Positioning · Stock Futures".
+- **One line on what to do**: "Pick a universe, a mode and a date in the rail, then Run." The
+  two universes are now the first two Coverage cards.
+- **Three sections, the family's three.** Coverage (F&O stocks, the index desk, history),
+  System (signal, risk, book) and What a Run Returns (tonight's orders, the book, the market
+  around it, the record). The five-card "What It Takes" strip that led the page is gone as a
+  section: its numbers are the system panels' spec rows (the record and the worst drawdown
+  computed from the track record, as before), so the three panels carry four rows each and
+  stand at one height.
+- **The family's footer**: "© 2026 VAAYDO · @thebullishvalue · v7.3.1 · the time drawn, IST"
+  on every page. The line it replaced ("decision support, not investment advice") is a note
+  under System Data's definitions.
+- A failed run is reported under the masthead on the cold start and under the command bar on
+  a loaded page, as in Sanket (it printed above everything).
+
+---
+
 ## [7.3.0] — 2026-11-18 — *One family*
 
 VAAYDO's design system already came from Sanket's, file for file; what had not come with it
