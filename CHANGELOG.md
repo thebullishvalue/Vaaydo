@@ -22,10 +22,10 @@ An audit of the run's progress card against every member's, step by step on real
   5%") for the whole computation, then jumped to 100%. Finished runs are now kept by hand, for
   the hour as before, so the first run reports every step and a repeat is instant. A past date is
   kept the same way (it was recomputed on every click).
-- **Every step has the family's detail line**, under a Title Case step: "Fetching NSE Files ·
-  F&O bhavcopy · the sessions the bundle lacks", "Replaying the Book · fills, rolls, stops · one
-  lot each", "Option Chains · OI by strike · dealer gamma · IV smile". The card was the family's
-  without its third line (78px against every member's 97), the steps lower-case.
+- **Every step has the family's detail line**, saying what the step is working on: "Fetching
+  NSE Files · F&O bhavcopy · the sessions the bundle lacks", "Replaying the Book · fills, rolls,
+  stops · one lot each", "Option Chains · OI by strike · dealer gamma · IV smile". The card was
+  the family's without its third line (78px against every member's 97).
 - **The desk's steps run forward.** "Verdicts · 90%" was reported before "Market Breadth ·
   85%"; it now follows the breadth read, where its work is.
 - **The phases name the work and never step back.** The desk's steps were unknown to the phase
