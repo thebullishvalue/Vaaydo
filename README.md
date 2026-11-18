@@ -91,6 +91,10 @@ Pragyam levels, sectors) so a run takes seconds. `.github/workflows/refresh.yml`
 each evening's session (`scripts/refresh_bundle.py`); without it, the app fetches
 missing days itself.
 
+Inputs that NSE's nightly files don't carry are checked by `scripts/check_inputs.py`: the
+holiday list ahead (which sets roll dates) and the sector map. Say **panchang** in a Claude
+session to run the update routine (`.claude/skills/panchang`).
+
 ## Layout
 
 ```
