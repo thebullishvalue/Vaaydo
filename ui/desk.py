@@ -47,7 +47,8 @@ def _regime(row) -> tuple[str, str]:
     g = row.get("gex_dealer", np.nan)
     if not np.isfinite(g):
         return "—", "neutral"
-    return ("Dealers long gamma · damping", "success") if g > 0 else ("Dealers short gamma · amplifying", "danger")
+    # a description of the reading, not a forecast: "positive gamma damps moves" was tested and is too weak to rely on
+    return ("Dealer gamma positive", "neutral") if g > 0 else ("Dealer gamma negative", "warning")
 
 
 def _index_card(P, sym, dk):
@@ -62,12 +63,12 @@ def _index_card(P, sym, dk):
         ("Spot", f"{_num(r['spot'], 2)}  ({_pct(chg, 2)})"),
         ("Near future", f"{_num(r['fut_close'], 2)} · {pd.Timestamp(r['fut_expiry']):%d %b} · carry over risk-free "
                         + (f"{_pct(r.get('basis'), 2)} p.a." if r.get("fut_dte", 0) >= 5 else "— (too near expiry to annualise)")),
-        ("Rollover", f"{_pct(r.get('rollover'), 0, False)} of futures OI in later months · {int(r.get('fut_dte', 0))} days to expiry"),
+        ("Rollover", f"{_pct(r.get('rollover'), 0, False)} of futures OI in later months · {int(r.get('fut_dte', 0))} calendar days to expiry"),
         ("ATM IV", f"{_pct(r.get('iv_front'), 1, False)} front ({int(r.get('front_dte', 0) or 0)}d) · {_pct(r.get('iv_30'), 1, False)} 30-day"),
         ("Priced move", f"±{_pct(em, 2, False)} (±{_num(em * r['spot'], 0)} pts) to {pd.Timestamp(r['front_expiry']):%d %b}"
          if np.isfinite(em) else "—"),
         ("Put/call OI", f"{r.get('pcr_oi', np.nan):.2f} all · {r.get('pcr_oi_front', np.nan):.2f} nearest"),
-        ("Max pain", f"{_num(r.get('max_pain'))}  ({_pct(r.get('max_pain_d'), 2)})"),
+        ("Max pain (not a target: tested, no pull)", f"{_num(r.get('max_pain'))}  ({_pct(r.get('max_pain_d'), 2)})"),
         ("Call wall / put wall", f"{_num(r.get('wall_call'))} / {_num(r.get('wall_put'))}"),
         ("Gamma flip", f"{_num(r.get('flip'))}  ({_pct(r.get('flip_d'), 2)} from spot)"),
         ("Skew (IV 3% below − 3% above)", f"{r.get('skew', np.nan) * 100:+.1f} vol pts" if np.isfinite(r.get("skew", np.nan)) else "—"),
@@ -197,7 +198,7 @@ def _futures(P, sym, start):
     fig = go.Figure(go.Bar(x=[f"{pd.Timestamp(e):%b %y}" for e in same["fut_expiry"]], y=same["rollover"] * 100,
                            marker_color=[chart_color("accent") if d == r["date"] else chart_color("slate") for d in same["date"]]))
     fig.update_layout(**chart_layout(height=260, show_legend=False))
-    ui.render_chart_panel(fig, f"roll-{sym}", f"Rollover with {int(r['fut_dte'])} days to expiry, this month against the last twelve",
+    ui.render_chart_panel(fig, f"roll-{sym}", f"Rollover with {int(r['fut_dte'])} calendar days to expiry, this month against the last twelve",
                           units="% of futures OI in later months")
     fig = go.Figure()
     fig.add_scatter(x=h["date"], y=h["fut_oi"] / 1e5, name="Futures OI", line_color=chart_color("violet"))
@@ -219,15 +220,16 @@ def _combined_reads(dk):
         dict(label="Agreement (FII stance × breadth)", value={1.0: "▲ both up", -1.0: "▼ both down"}.get(ag, "— disagree"),
              subtext=f"FII stance z {stt.get('fii', np.nan):+.2f} · breadth z {stt.get('breadth', np.nan):+.2f}",
              color_class="success" if ag > 0 else ("danger" if ag < 0 else "neutral")),
-        dict(label="Precedent, next 5 sessions", value=_pct(pr.get("read"), 2) if pr else "—",
-             subtext=(f"{pr['up']:.0%} of 10 analogs rose vs {pr['base_up']:.0%} usually · p {pr['p']:.2f}" if pr else "warming up"),
+        dict(label="Precedent: analogs' average 5-session move vs usual", value=_pct(pr.get("read"), 2) if pr else "—",
+             subtext=(f"separately: {pr['up']:.0%} of the {len(pr.get('analogs') or []) or 10} rose (usually {pr['base_up']:.0%}); p {pr['p']:.2f}, "
+                      f"{'not ' if pr['p'] >= 0.05 else ''}different from usual" if pr else "warming up"),
              color_class="neutral" if not pr or pr["p"] >= 0.05 else ("success" if pr["read"] > 0 else "danger")),
     ], max_cols=2, key="combined-reads")
     if pr and pr.get("analogs"):
         ui.render_data_table(pd.DataFrame([{"Past session": f"{pd.Timestamp(d):%d %b %Y}", "NIFTY futures, next 5 sessions": _pct(o, 2),
                                             "Distance": f"{dist:.2f}"} for d, o, dist in pr["analogs"]]),
-                             show_index=False, label_col="Past session", max_height=300)
-        st.markdown('<div class="panel-copy">The ten past sessions whose trend, breadth, PCR, FII stance, IV and dealer gamma '
+                             show_index=False, label_col="Past session", max_height=380)
+        st.markdown(f'<div class="panel-copy">The {len(pr["analogs"])} past sessions whose trend, breadth, PCR, FII stance, IV and dealer gamma '
                     'looked most like today\'s (Mahalanobis distance, distinct episodes, outcomes known at the time).</div>',
                     unsafe_allow_html=True)
 
@@ -280,7 +282,7 @@ def _evidence(dk):
             fig.add_scatter(x=g["expiry"], y=g["ret"].cumsum() * 100, name=f"{s} {k}", mode="lines")
         fig.add_hline(y=0, line_dash="dot", line_color=chart_color("slate"))
         fig.update_layout(**chart_layout(height=320))
-        ui.render_chart_panel(fig, "cyc", "Cumulative P&L per cycle", units="% of max loss, summed")
+        ui.render_chart_panel(fig, "cyc", "Every cycle's result, added up", units="% of that cycle's max loss; −100% = one full max loss")
         summ = C.groupby(["structure", "symbol"]).agg(cycles=("ret", "size"), mean=("ret", "mean"), won=("pnl", lambda x: (x > 0).mean()),
                                                       worst=("ret", "min")).reset_index()
         ui.render_data_table(pd.DataFrame({"Structure": summ["structure"], "Index": summ["symbol"], "Cycles": summ["cycles"],
@@ -296,9 +298,15 @@ def _evidence(dk):
         for c in ("P1", "P2", "P3", "all", "disc", "vali", "fina", "fut"):
             w[c] = w[c].round(2)
         w["Verdict"] = np.where(w["accept"], "passes", "rejected")
-        ui.render_data_table(w.rename(columns={"reading": "Reading", "sign": "Sign", "P1": "2006–12", "P2": "2013–18", "P3": "2019–26",
-                                               "all": "Spot all", "disc": "Fut disc", "vali": "Fut val", "fina": "Fut final",
-                                               "fut": "Fut all"}).drop(columns=["accept"]), show_index=False, label_col="Reading")
+        plain = {"W1 breadth": "Market breadth (10-day)", "W2 rel_breadth": "Relative breadth", "W3 rel_ad": "A/D momentum",
+                 "W4 regime": "Regime score", "W5 signal_str": "Signal strength", "W8 spread flag": "Above 90 & 200-day MA",
+                 "W9 pe_dev": "PE vs fair PE (20 sessions)", "W10 ey gap": "Earnings yield − 10y (20 sessions)",
+                 "W11 in_yc": "Yield curve 10y − 2y (20 sessions)", "W12 count": "±1% day count"}
+        w["reading"] = w["reading"].map(lambda v: plain.get(v, v))
+        ui.render_data_table(w.rename(columns={"reading": "Reading", "sign": "Sign", "P1": "Spot 2006–12", "P2": "Spot 2013–18",
+                                               "P3": "Spot 2019–26", "all": "Spot all", "disc": "Futures 2019–22",
+                                               "vali": "Futures 2023–24H1", "fina": "Futures 2024H2–26",
+                                               "fut": "Futures all"}).drop(columns=["accept"]), show_index=False, label_col="Reading")
         ui.render_data_table(pd.DataFrame([
             {"Rule": "S0 long, always", "2006–12": 0.34, "2013–18": 0.31, "2019–26": 0.41, "Fut disc": 0.58, "Fut val": 1.15, "Fut final": -0.22},
             {"Rule": "A1 long when regime > 0", "2006–12": 0.85, "2013–18": 0.12, "2019–26": 0.29, "Fut disc": 0.86, "Fut val": 0.33, "Fut final": -0.31},
@@ -392,7 +400,7 @@ def _oi_tab(dk, P):
         r = _last(P, sym)
         ui.render_kpi_strip([
             dict(label="Spot", value=_num(v["spot"], 2), subtext=f"nearest expiry {pd.Timestamp(v['expiry']):%d %b}"),
-            dict(label="Max pain", value=_num(r.get("max_pain")), subtext=_pct(r.get("max_pain_d"), 2) + " from forward"),
+            dict(label="Max pain", value=_num(r.get("max_pain")), subtext=_pct(r.get("max_pain_d"), 2) + " from forward · not a target"),
             dict(label="Call wall", value=_num(r.get("wall_call")), subtext="largest call OI above"),
             dict(label="Put wall", value=_num(r.get("wall_put")), subtext="largest put OI below"),
             dict(label="Gamma flip", value=_num(r.get("flip")), subtext=_regime(r)[0],

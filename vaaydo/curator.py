@@ -82,6 +82,17 @@ def _bundle_pragyam(symbols, asof: pd.Timestamp) -> pd.DataFrame:
     return P[P["date"] <= asof]
 
 
+def _trade_rupees(p: LG.Position, cost: float) -> float:
+    """Rupee P&L of the position across its legs, after costs (cost charged on each leg's entry value)."""
+    tot = 0.0
+    for l in p.legs:
+        if l.exit_px is None or not np.isfinite(l.exit_px) or not np.isfinite(l.entry_px):
+            return np.nan
+        e = l.entry_px * l.adj
+        tot += p.side * (l.exit_px - e) * l.lot - cost * e * l.lot
+    return tot
+
+
 def _trade_return(p: LG.Position, cost: float) -> float:
     r = 1.0
     for l in p.legs:
@@ -222,7 +233,14 @@ def run(asof: date | None = None, progress=None) -> Run:
                            exit=p.legs[-1].exit_date.date(), exit_px=p.legs[-1].exit_px,
                            exit_contract=p.legs[-1].contract.date(), legs=len(p.legs), why=why,
                            sessions=int(((M.cal >= p.legs[0].entry_date) & (M.cal <= p.legs[-1].exit_date)).sum()),
-                           ret=_trade_return(p, cost)))
+                           ret=_trade_return(p, cost), pnl_rs=_trade_rupees(p, cost),
+                           qty=p.legs[0].lot))
+    stopped = {}
+    for p, why, d in led.closed:
+        if "stop" in why and p.symbol in led.banned:
+            stopped[p.symbol] = dict(side="LONG" if p.side > 0 else "SHORT", stopped_on=d.date())
+    screen["stopped_side"] = screen["symbol"].map(lambda x: stopped.get(x, {}).get("side"))
+    screen["stopped_on"] = screen["symbol"].map(lambda x: stopped.get(x, {}).get("stopped_on"))
     return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ratios, dates, notes, ban, (nb_date, nb), ren_last)
 
 
@@ -244,6 +262,11 @@ def _roll_plan(M, A, s, contract) -> tuple:
     later = sorted(e for e in M.contracts_on.get((A, s), []) if e > pd.Timestamp(contract))
     what = f"roll to FUT {later[0]:%d %b %y}" if later else "close: no later contract listed (leaving F&O?)"
     return when, what
+
+
+def _roll_qty(M, A, s, contract):
+    later = sorted(e for e in M.contracts_on.get((A, s), []) if e > pd.Timestamp(contract)) if contract is not None else []
+    return int(M.lot.get((A, s, later[0]), 0) or 0) if later else 0
 
 
 def _positions(M, led, A, screen: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -307,6 +330,7 @@ def _positions(M, led, A, screen: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
             leg_since=leg_since.date() if leg_since is not None else None, leg_px=leg_px,
             roll_on=roll_on.date() if roll_on is not None else None, roll_what=roll_what,
             lot_now=int(M.lot.get((A, s, contract), 0) or 0) if contract is not None else 0,   # the exchange's lot today
+            roll_qty=_roll_qty(M, A, s, contract) if roll_on is not None else 0,               # the next contract's lot
             industry=sr.get("industry", "—"), score=sr.get("score", np.nan)))
     pos = pd.DataFrame(rows)
     if len(pos):

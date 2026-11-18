@@ -51,15 +51,21 @@ def fix_prices(d: pd.DataFrame, ref: pd.Series | None) -> pd.DataFrame:
 
 
 def _wilder_rsi(p: pd.Series, n=14) -> pd.Series:
-    ch = p.diff()
-    g, l = ch.clip(lower=0), (-ch).clip(lower=0)
-    ag = g.rolling(n).mean()
-    al = l.rolling(n).mean()
-    ag_, al_ = ag.copy(), al.copy()
-    for i in range(n + 1, len(p)):
-        ag_.iat[i] = (ag_.iat[i - 1] * (n - 1) + g.iat[i]) / n
-        al_.iat[i] = (al_.iat[i - 1] * (n - 1) + l.iat[i]) / n
-    return 100 - 100 / (1 + ag_ / al_)
+    """Wilder RSI on the valid part of the series (a history that starts with blanks, such as an
+    NSE close that begins in 2013, must not seed the recursion with NaN)."""
+    out = pd.Series(np.nan, index=p.index)
+    v = p.dropna()
+    if len(v) <= n:
+        return out
+    ch = v.diff()
+    g, l = ch.clip(lower=0).to_numpy(), (-ch).clip(lower=0).to_numpy()
+    ag, al = np.full(len(v), np.nan), np.full(len(v), np.nan)
+    ag[n], al[n] = np.nanmean(g[1:n + 1]), np.nanmean(l[1:n + 1])
+    for i in range(n + 1, len(v)):
+        ag[i] = (ag[i - 1] * (n - 1) + g[i]) / n
+        al[i] = (al[i - 1] * (n - 1) + l[i]) / n
+    out.loc[v.index] = 100 - 100 / (1 + ag / al)
+    return out
 
 
 def _fair_pe(d: pd.DataFrame, min_obs=500) -> pd.Series:
@@ -127,7 +133,8 @@ def features(d: pd.DataFrame) -> pd.DataFrame:
     d["regime"] = np.where(r.notna(), rz + bz + sz + pz, np.nan)
     z = (p - d["ma20"]) / d["sd20"].replace(0, 1)
     pdv = d["pe_dev"]
-    d["signal_str"] = (r - 50) / 50 + z / 2 + np.where(pdv.abs() > 0.01, np.sign(pdv) / 3, pdv)
+    # the valuation term needs a fair PE (rate data); without it the term is left out, not NaN
+    d["signal_str"] = (r - 50) / 50 + z / 2 + np.where(pdv.abs() > 0.01, np.sign(pdv) / 3, pdv.fillna(0.0))
     d["btd"] = ((p < d["lower"]) & (r < 40)).astype(float)
     d["stt"] = ((p > d["upper"]) & (r > 70) & (d["breadth"] > 0.5)).astype(float)
     d["spread_flag"] = ((d["spread90"] > 1.5) & (d["spread200"] > 1.5)).astype(float)
@@ -220,7 +227,10 @@ def nse_index_day(d, session) -> dict | None:
         return None
     x = pd.read_csv(io.StringIO(r.text))
     x.columns = [c.strip() for c in x.columns]
-    row = x[x["Index Name"].astype(str).str.strip().str.lower() == "nifty 50"]
+    name = x["Index Name"].astype(str).str.strip().str.lower()
+    row = x[name == "nifty 50"]
+    if row.empty:
+        row = x[name == "cnx nifty"]                  # the index's name until Nov 2015
     if row.empty:
         return None
     row = row.iloc[0]

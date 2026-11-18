@@ -197,3 +197,23 @@ Equal rupees (reference): 0.76, −17.4%.
 (stocks and index desk, nothing read after the run date); holdings identical at 97/97
 checkpoints; rupee P&L identical; 30 invariants of the screen, tickets, book and index desk
 hold; the nightly refresh rebuilds every shipped file exactly.
+
+## Fourth pass: what the app shows, read as a user (Nov 2026)
+
+Every screen in both universes was read twice: as a newcomer placing tonight's orders and as a
+practitioner checking the numbers. A reading had to answer what it is, what unit it is in,
+whether it is a trade or only context, and where it belongs.
+
+| Where | Finding | Change |
+|---|---|---|
+| Top bar | It said "signals" and "positions" without saying what to do tonight. | A mode-specific bar: Tonight's orders (buy · sell · exit) and the book after the next open. Range mode shows From / To / Size. Notices are hidden in range mode. |
+| Ban notice | It listed banned names without saying whether they mattered. | It says whether any banned name is in the book or tonight's orders. |
+| Signals | The cards counted signals, and the open book was repeated here. | Order tickets: exact BUY/SELL text (quantity, contract, market at the next open), exits with their reason and P&L, and rolls announced with the session they happen on. Holdings live on Book only. |
+| Book | The industry table mixed signed and unsigned figures. Tickets repeated a "Why" column. | The table shows Long and Short (unsigned) and Net (signed), sorted by \|net\|. Leg tables show quantity per leg. The KPIs say what they cover (before charges, rough margin). |
+| Watchlist | Gaps were shown as raw score differences, and a stopped name gave no date or re-arm rule. | Ranks and gaps are in percentile points. The stopped table shows Was / Stopped on / Score rank now / Re-arms when. |
+| Flow | No horizons were stated, colours had no meaning, and nothing linked the flow to the book. | Every column names its horizon. Build-up colours are semantic. Option flow lists names in the book first, with an "In VAAYDO" column. A header says none of it is a signal. |
+| Screen | Score columns had no horizon. | Score rank (10-session), Today's rank (1 session), Event priced. |
+| Range mode | Trades were filtered by signal date, so P&L by month mixed periods. | Trades are filtered by exit date, months are by exit in rupees for one lot, and positions still open are stated separately. |
+| Index desk | Max pain read like a target, the gamma chip read like a call, "days" were ambiguous, and precedent mixed two statistics. | "Max pain (not a target: tested, no pull)". The chip reads "Dealer gamma positive/negative". The desk shows calendar days to expiry. The precedent shows the analogs' average move vs usual, plus a separate hit rate; all analogs are shown. |
+| Breadth | "+nan" regime, RSI and strength (RSI seeded on NaN; missing valuation; NIFTY 2013–15 rows lost to the "CNX Nifty" name). | RSI is seeded on valid data, the valuation term is neutral when missing, and 664 rows were refilled. |
+| Evidence | Code-like column names. | Plain reading names; periods are spelt out (Spot 2006–12 … Futures all). |
