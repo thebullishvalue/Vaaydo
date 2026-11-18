@@ -11,6 +11,37 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.3.2] — 2026-11-18 — *Sides in their ink, positions by the day they opened*
+
+An audit of every table for the order its rows come in and for how it says a side.
+
+### Changed
+- **Positions newest first, by the day each was opened.** The book came in the engine's order:
+  entries, then every long A–Z, then every short A–Z, so a position opened yesterday sat
+  wherever its letter put it (and the subtitle claimed "the positions held longest"). Every
+  position-like table now reads newest first: tomorrow's entries, then each position by its
+  entry date, the stronger signal first on a tie. The orders to enter, exit and roll, and the
+  contract-legs picker, follow the same rule. Long and short are no longer grouped; the side is
+  told by its ink. The engine's own order (and the CSV exports) are unchanged.
+- **A side in its ink, written one way.** ▲ LONG in the long ink and ▼ SHORT in the short ink,
+  BUY and SELL likewise in the order cells (both words in a roll), and the ▲ / ▼ of every state
+  (▲ NEW, READY ▼) in Option flow and the Screen. Only the token is inked, and the glyph and the
+  word stay, so a side is never told by colour alone; P&L keeps its own sign colour. The side
+  was written four ways ("▲ LONG", "LONG", "long ▲", "long"); it is "▲ LONG" / "▼ SHORT" in
+  every table, the index desk's paper side included.
+- **Stopped out: most recent stop first** (it came in the screen's order). By Industry says
+  its order (largest net first).
+
+### Fixed
+- **One minus sign.** Rupee amounts printed "−" (U+2212) beside percentages, prices and points
+  printing "-", in the same rows; every number now uses one.
+- **The evidence table in its registered order** (H1, H1b, H2 … H10, H11, H12): read as text it
+  ran H1, H10, H11, H12, H1b, H2.
+- **NIFTY before BANKNIFTY** in the paper-candidate and premium-selling tables, as everywhere
+  else on the desk (alphabetical put BANKNIFTY first).
+
+---
+
 ## [7.3.1] — 2026-11-18 — *The family's cold start*
 
 7.3.0 brought the analysis pages into the family and left the landing page as it was; set

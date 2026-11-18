@@ -46,6 +46,22 @@ def _pctile(s: pd.Series, v) -> float:
 INDEXES = ("NIFTY", "BANKNIFTY")
 
 
+def _natural(label) -> tuple:
+    """'H10 basis' after 'H2 …': the number in a label read as a number."""
+    import re
+    return tuple(int(p) if p.isdigit() else p for p in re.split(r"(\d+)", str(label)))
+
+
+def _index_first(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """NIFTY before BANKNIFTY, as everywhere on the desk (alphabetical put BANKNIFTY first)."""
+    return df.assign(_i=df[col].map({k: i for i, k in enumerate(INDEXES)}).fillna(9)).sort_values("_i", kind="stable").drop(columns="_i")
+
+
+def _side(v) -> str:
+    s = str(v or "").upper()
+    return "▲ LONG" if s == "LONG" else "▼ SHORT" if s == "SHORT" else (str(v) if v else "—")
+
+
 def _index_picker(key: str) -> str:
     """NIFTY or BANKNIFTY, as the family's segmented control (a radio drew Streamlit's own type)."""
     pick, _ = st.columns([1, 2])
@@ -282,6 +298,7 @@ def _evidence(dk):
                              "Accepted only with the registered sign at t ≥ 1 in every period and |t| ≥ 2 overall.", icon="shield")
     if len(T):
         x = T[T["h"] == 5].pivot_table(index="reading", columns="period", values="t")
+        x = x.reindex(sorted(x.index, key=_natural))
         sg = T.drop_duplicates("reading").set_index("reading")["sign"].reindex(x.index)
         cols = [c for c in ("discovery", "validation", "final", "all") if c in x]
         x = x[cols]
@@ -327,6 +344,7 @@ def _evidence(dk):
         ui.render_chart_panel(fig, "cyc", "Every cycle's result, added up", context="% of that cycle's max loss · −100% = one full max loss")
         summ = C.groupby(["structure", "symbol"]).agg(cycles=("ret", "size"), mean=("ret", "mean"), won=("pnl", lambda x: (x > 0).mean()),
                                                       worst=("ret", "min")).reset_index()
+        summ = _index_first(summ, "symbol").sort_values("structure", kind="stable")
         ui.render_table_panel(pd.DataFrame({"Structure": summ["structure"], "Index": summ["symbol"], "Cycles": summ["cycles"],
                                             "Mean per cycle": summ["mean"].map(lambda v: _pct(v, 1)),
                                             "Won": summ["won"].map(lambda v: _pct(v, 0, False)),
@@ -530,14 +548,16 @@ def render(dk, meta: dict):
                                  "Promoted only if they earn it out of sample.", icon="eye")
         pp = dk.paper
         if len(pp):
+            pp = _index_first(pp, "symbol")
             ui.render_table_panel(pd.DataFrame({
                 "Index": pp["symbol"],
                 "FII options stance (z)": pp["fii_opt_z"].map(lambda v: f"{v:+.2f}" if v is not None and np.isfinite(v) else "—"),
-                "Paper futures side": pp["fii_side"],
+                "Paper futures side": [_side(v) for v in pp["fii_side"]],
                 "Front IV": pp["iv_front"].map(lambda v: _pct(v, 1, False)),
                 "Top-decile IV line": pp["iv_q90"].map(lambda v: _pct(v, 1, False)),
                 "Paper condor": pp["stress"].map(lambda s: "sell this cycle (IV in top decile)" if s else "stand aside"),
-            }), "desk-paper", context="paper candidates · no capital", show_index=False, label_col="Index")
+            }), "desk-paper", context="paper candidates · no capital", show_index=False, label_col="Index",
+                direction_cols={"Paper futures side"})
         B = dk.breadth
         if B is not None and len(B):
             med = B["breadth"].rolling(250, min_periods=120).median().iloc[-1]

@@ -23,7 +23,7 @@ from vaaydo import curator, index_desk, signal
 import ui.desk as desk_view
 from vaaydo.universe import UNIVERSES, constituents
 
-VERSION = "7.3.1"
+VERSION = "7.3.2"
 STOCKS, INDICES = "F&O Stocks", "Indices · NIFTY & BANKNIFTY"
 st.set_page_config(page_title="VAAYDO | F&O Trade Screener", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
@@ -65,7 +65,7 @@ TRACK_BOOKS = (("one_lot", "One lot of every name (what VAAYDO trades)"), ("equa
 def inr(x, sign=False) -> str:
     if x is None or not isinstance(x, (int, float, np.floating)) or not np.isfinite(x):
         return "—"
-    s = "−" if x < 0 else ("+" if sign and x > 0 else "")
+    s = "-" if x < 0 else ("+" if sign and x > 0 else "")      # the same minus as every other formatter
     x = abs(x)
     if x >= 1e7:
         return f"{s}₹{x / 1e7:.2f} Cr"
@@ -113,6 +113,28 @@ def rank_pts(x, sign=True) -> str:
         return (f"{round(x * 100, 1) + 0.0:+.1f} pts" if sign else f"{abs(x) * 100:.1f} pts") if np.isfinite(x) else "—"
     except TypeError:
         return "—"
+
+
+def side_text(side) -> str:
+    """A side, written one way everywhere: the triangle and the word (inked by the table)."""
+    s = str(side or "").upper()
+    return "▲ LONG" if s == "LONG" else "▼ SHORT" if s == "SHORT" else "—"
+
+
+def by_opened(df: pd.DataFrame, asof=None) -> pd.DataFrame:
+    """Positions newest first, by the day each was opened: tomorrow's entries (opened at the
+    next open) lead, then each held position by its entry date. A tie is broken by the
+    stronger signal (score rank furthest from 50%), then the symbol. Long and short are not
+    grouped: the side is told by its ink, not by where the row sits."""
+    if df is None or not len(df):
+        return df
+    nxt = pd.Timestamp(asof or date.today()) + pd.Timedelta(days=1)
+    opened = pd.to_datetime(df["entry_date"]) if "entry_date" in df else pd.Series(pd.NaT, index=df.index)
+    if "action" in df:
+        opened = opened.where(df["action"] != "ENTER", nxt)
+    strength = (pd.to_numeric(df["score"], errors="coerce") - 0.5).abs() if "score" in df else 0
+    return (df.assign(_o=opened.fillna(nxt), _s=strength)
+              .sort_values(["_o", "_s", "symbol"], ascending=[False, False, True]).drop(columns=["_o", "_s"]))
 
 
 def fmt_date(d) -> str:
@@ -384,26 +406,28 @@ def order(p, kind: str) -> str:
 
 
 def entry_orders(df: pd.DataFrame):
+    df = by_opened(df, r.asof)
     rows = [{"Symbol": p["symbol"], "Order": order(p, "ENTER"), "Signal": fmt_date(p["signal"]),
              "Last close": px(p["last"]), "Stop after entry": f"{px(p['stop'])} ({pct(p['stop_from_last'])})",
              "Risk to stop": inr(p["risk_to_stop"]), "Range, 10 sessions (80%)": f"{px(p['range_lo'])} – {px(p['range_hi'])}",
              "Industry": p.get("industry", "—")} for _, p in df.iterrows()]
     ui.render_table_panel(pd.DataFrame(rows), "orders-enter", units="market orders at the next open · one lot each",
-                          show_index=False, label_col="Symbol", max_height=420)
+                          show_index=False, label_col="Symbol", max_height=420, direction_cols={"Order"})
 
 
 def exit_orders(df: pd.DataFrame):
+    df = by_opened(df, r.asof)
     rows = [{"Symbol": p["symbol"], "Order": order(p, "EXIT"),
              "P&L (all legs, before charges)": inr(p["pnl"], True), "Return": pct(p["pnl_pct"]), "Reason": p["why"] or "",
              "Opened": f"{px(p['first_px'])} · {fmt_date(p['entry_date'])} · {fut(p['first_contract'])}"} for _, p in df.iterrows()]
     ui.render_table_panel(pd.DataFrame(rows), "orders-exit", units="market orders at the next open · closes the position",
-                          show_index=False, label_col="Symbol", max_height=420,
+                          show_index=False, label_col="Symbol", max_height=420, direction_cols={"Order"},
                           sign_color_cols={"P&L (all legs, before charges)", "Return"})
 
 
 def roll_orders(df: pd.DataFrame):
     rows = []
-    for _, p in df.iterrows():
+    for _, p in by_opened(df, r.asof).iterrows():
         long_, q, q2 = p["side"] == "LONG", int(p["lot"] or 0), int(p.get("roll_qty") or 0)
         if str(p["roll_what"]).startswith("roll to"):
             nxt = p["roll_what"].replace("roll to ", "")
@@ -413,9 +437,9 @@ def roll_orders(df: pd.DataFrame):
         else:
             o = f"{'SELL' if long_ else 'BUY'} {q:,} {fut(p['contract'])}: no later contract is listed"
             note = "stock leaving F&O"
-        rows.append({"Symbol": p["symbol"], "Side": p["side"], "Orders": o, "Last": px(p["last"]), "Note": note})
+        rows.append({"Symbol": p["symbol"], "Side": side_text(p["side"]), "Orders": o, "Last": px(p["last"]), "Note": note})
     ui.render_table_panel(pd.DataFrame(rows), "orders-roll", units="both legs at the close",
-                          show_index=False, label_col="Symbol", max_height=420)
+                          show_index=False, label_col="Symbol", max_height=420, direction_cols={"Side", "Orders"})
 
 
 def trade_kpis(tr: pd.DataFrame, key: str, span: str = ""):
@@ -441,7 +465,7 @@ def tickets(df: pd.DataFrame, kind: str):
     if df is None or df.empty:
         return
     rows = []
-    for _, p in df.iterrows():
+    for _, p in by_opened(df, r.asof).iterrows():
         enter = kind == "ENTER" or p.get("action") == "ENTER"      # a new signal: not filled until the next open
         if enter:
             opened = f"next open · {fut(p['contract'])}"
@@ -457,7 +481,7 @@ def tickets(df: pd.DataFrame, kind: str):
             f"{fmt_date(p['roll_on'])} close · {p['roll_what']}"
         # What a trader acts on first (size, price, P&L, stop), then where it came from.
         rows.append({
-            "Symbol": p["symbol"], "Side": ("▲ " if p["side"] == "LONG" else "▼ ") + p["side"],
+            "Symbol": p["symbol"], "Side": side_text(p["side"]),
             "Quantity": qty_text(p),
             "Last": px(p["last"]),
             "P&L (all legs, before charges)": "—" if enter else inr(p["pnl"], True),
@@ -472,7 +496,7 @@ def tickets(df: pd.DataFrame, kind: str):
             "Industry": p.get("industry", "—"),
         })
     ui.render_table_panel(pd.DataFrame(rows), "book-positions", units="one lot each · P&L before charges",
-                          show_index=False, label_col="Symbol", max_height=640,
+                          show_index=False, label_col="Symbol", max_height=640, direction_cols={"Side"},
                           sign_color_cols={"P&L (all legs, before charges)", "Return"})
 
 
@@ -502,13 +526,15 @@ def leg_table(lg: pd.DataFrame, sym: str):
 @st.fragment
 def position_legs(held: pd.DataFrame, book_legs: pd.DataFrame):
     """Picking a position reruns only this block, so the page stays on the Book tab."""
-    order_ = held.assign(_f=(held["action"] != "ENTER").astype(int)).sort_values(["_f", "legs"], ascending=False)
+    order_ = by_opened(held[held["action"] != "ENTER"], r.asof)
+    if not len(order_):
+        return
     ui.render_section_header("Contract Legs", "Every futures contract a position has been held in: its fill, its roll "
-                             "and its P&L.", icon="list")
+                             "and its P&L. Positions in the order above.", icon="list")
     pick, _ = st.columns([1, 2])
     sym = pick.selectbox("Position", list(order_["symbol"]), key="book_sym",
-                         format_func=lambda x: f"{x} · {held.set_index('symbol').loc[x, 'side'].lower()}"
-                         + (" · enters at the next open" if held.set_index('symbol').loc[x, 'action'] == 'ENTER' else ""))
+                         format_func=lambda x: f"{x} · {held.set_index('symbol').loc[x, 'side'].lower()} · "
+                                               f"opened {fmt_date(held.set_index('symbol').loc[x, 'entry_date'])}")
     p = held.set_index("symbol").loc[sym]
     ui.render_sub_header(f"{sym} · {p['side'].lower()} · signal {fmt_date(p['signal'])} · {int(p['legs'])} "
                          f"leg{'s' if int(p['legs']) != 1 else ''} · realised {inr(p['realised'], True)} · "
@@ -627,12 +653,13 @@ if meta.get("mode") == "Single Date":
                  subtext="lost from today's close if every stop hit"),
             dict(label="Margin (rough)", value=inr((gl + gs) * 0.2), subtext="≈ 20% of notional; your broker's SPAN differs"),
         ], key="book-kpis")
-        ui.render_section_header("Positions After the Next Open", "Entries first, then the positions held longest. Each "
-                                 "position's contract legs are below.", icon="layers")
+        ui.render_section_header("Positions After the Next Open", "Newest first: tomorrow's entries, then each position by "
+                                 "the day it was opened. Its contract legs are below.", icon="layers")
         if len(held):
             tickets(held, "HOLD")
             position_legs(held, book_legs)
-            ui.render_section_header("By Industry", "Gross notional by industry, long against short.", icon="grid")
+            ui.render_section_header("By Industry", "Gross notional by industry, long against short; the largest net first.",
+                                 icon="grid")
             ind = held.groupby(["industry", "side"])["notional"].sum().unstack(fill_value=0)
             for c in ("LONG", "SHORT"):
                 if c not in ind:
@@ -642,7 +669,7 @@ if meta.get("mode") == "Single Date":
             ui.render_table_panel(pd.DataFrame({"Industry": ind.index, "Long": [inr(v) if v else "—" for v in ind["LONG"]],
                                                 "Short": [inr(v) if v else "—" for v in ind["SHORT"]],
                                                 "Net (long − short)": [inr(v, True) for v in ind["Net"]]}),
-                                  "book-industry", units="gross notional", show_index=False, label_col="Industry",
+                                  "book-industry", units="gross notional · largest net first", show_index=False, label_col="Industry",
                                   max_height=360, sign_color_cols={"Net (long − short)"})
         else:
             ui.render_empty_state("No positions", "The book is empty after the next open.", eyebrow="Book")
@@ -656,26 +683,28 @@ if meta.get("mode") == "Single Date":
             w["dist"] = w["to_entry"].abs()
             w = w.sort_values("dist")
             ui.render_table_panel(pd.DataFrame({
-                "Symbol": w["symbol"], "Would be": ["long ▲" if x == "READY ▲" else "short ▼" for x in w["state"]],
+                "Symbol": w["symbol"], "Would be": [side_text("LONG" if x == "READY ▲" else "SHORT") for x in w["state"]],
                 "Score rank": [rank(v) for v in w["score"]], "Gap to entry": [rank_pts(v, False) for v in w["dist"]],
                 "Rank change, 5 sessions": [rank_pts(v) for v in w["score_chg5"]],
                 "Put/call vol": w["pcr_vol"].round(2), "Put skew (vol pts)": [volpts(v) for v in w["skew"]],
                 "IV": [pct(v, False, 0) for v in w["atm_iv"]], "Futures, 5 sessions": w["build5"].fillna("—"),
                 "Industry": w["industry"]}), "watch-near", units="near an entry · nearest first",
-                show_index=False, label_col="Symbol")
+                show_index=False, label_col="Symbol", direction_cols={"Would be"})
         else:
             ui.render_empty_state("Nobody close", "No stock is moving toward an entry.", eyebrow="Watchlist")
         st_ = scr[scr["state"] == "STOPPED"]
+        st_ = st_.assign(_d=pd.to_datetime(st_["stopped_on"])).sort_values(["_d", "symbol"], ascending=[False, True])
         if len(st_):
             ui.render_section_header("Stopped Out, Waiting to Re-arm", "A stopped position does not re-enter while its signal "
                                      "stays strong. It re-arms only after the score leaves the band (below 85% for a long, "
                                      "above 15% for a short); a later signal is then a new trade.", icon="alert-triangle")
             ui.render_table_panel(pd.DataFrame({
-                "Symbol": st_["symbol"], "Was": st_["stopped_side"].fillna("—").str.lower(),
+                "Symbol": st_["symbol"], "Was": [side_text(v) for v in st_["stopped_side"]],
                 "Stopped on": st_["stopped_on"].map(fmt_date), "Score rank now": [rank(v) for v in st_["score"]],
                 "Re-arms when the rank goes": ["below 85%" if sd == "LONG" else ("above 15%" if sd == "SHORT" else "—")
                                                for sd in st_["stopped_side"]],
-                "Industry": st_["industry"]}), "watch-stopped", units="stopped out", show_index=False, label_col="Symbol")
+                "Industry": st_["industry"]}), "watch-stopped", units="stopped out · most recent first", show_index=False,
+                label_col="Symbol", direction_cols={"Was"})
 
     with tabs[3]:
         fl = scr.dropna(subset=["fut_ret1"])
@@ -730,7 +759,8 @@ if meta.get("mode") == "Single Date":
             "Put − call writing (% of OI)": [pct(v, True, 2) for v in of["writer_tilt"]],
             "Unusual call − put (% of volume)": [pct(v, True, 0) for v in of["unusual_tilt"]],
             "Call vs put volume surge": [f"{np.exp(v):.2f}×" if np.isfinite(v) else "—" for v in of["surge_tilt"]]}),
-            "flow-options", units="stock options against yesterday", show_index=False, label_col="Symbol", max_height=520)
+            "flow-options", units="stock options against yesterday", show_index=False, label_col="Symbol", max_height=520,
+            direction_cols={"In VAAYDO"})
 
     with tabs[4]:
         ui.render_section_header("Option Contracts", "Every stock option that traded today, read against its previous session.",
@@ -755,6 +785,7 @@ if meta.get("mode") == "Single Date":
             "Delivery": [f"{v:.0f}%" if np.isfinite(v) else "—" for v in scr["deliv_pct"]],
             "Risk": scr["risk_regime"].fillna("—"), "Industry": scr["industry"]}),
             "screen-all", units=f"{len(scr)} F&O stocks", show_index=False, label_col="Symbol", max_height=640,
+            direction_cols={"State"},
             col_precision={"Put wall": 0, "Call wall": 0})
         ui.render_note("A dash in today's rank means that stock's input was missing for the day; its 10-session score "
                        "averages the days it has.")
@@ -843,13 +874,13 @@ else:
             trade_kpis(tr, "hr-kpis", span=f"closed {s0:%d %b %y} – {s1:%d %b %y}")
             t = tr.sort_values("exit", ascending=False)
             ui.render_table_panel(pd.DataFrame({
-                "Symbol": [traded_as(a, b) for a, b in zip(t["symbol"], t["entry"])], "Side": t["side"],
+                "Symbol": [traded_as(a, b) for a, b in zip(t["symbol"], t["entry"])], "Side": [side_text(v) for v in t["side"]],
                 "Entry": [f"{px(a)} · {fmt_date(b)} · {fut(c)}" for a, b, c in zip(t["entry_px"], t["entry"], t["entry_contract"])],
                 "Exit": [f"{px(a)} · {fmt_date(b)} · {fut(c)}" for a, b, c in zip(t["exit_px"], t["exit"], t["exit_contract"])],
                 "Sessions": t["sessions"], "Legs": t["legs"], "Return": t["ret"].map(pct),
                 "Rupees, one lot": [inr(v, True) for v in t["pnl_rs"]], "Exit reason": t["why"]}),
                 "hr-trades", units="fill to exit across rolls · after charges", show_index=False, label_col="Symbol",
-                max_height=600, sign_color_cols={"Return", "Rupees, one lot"})
+                max_height=600, sign_color_cols={"Return", "Rupees, one lot"}, direction_cols={"Side"})
     with tabs[1]:
         ui.render_section_header("P&L Realised Each Month", "Trades closed that month, one lot each, after charges.",
                                  icon="bar-chart")

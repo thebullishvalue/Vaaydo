@@ -908,6 +908,10 @@ _NUM = r"[+\-−±≈~]?\s*[₹$]?\s*\d[\d,]*(?:\.\d+)?\s*(?:%|×|x|σ|pts|pp|bp
 _NUM_TEXT = _re.compile(rf"^{_NUM}(?:\s*–\s*{_NUM})?(?:\s*\([^)]*\))?$")
 _EMPTY_TEXT = {"", "—", "–", "-"}
 
+# A side, as a table writes it: the triangle, the position word, the order word.
+_DIRECTION_TOKEN = _re.compile(r"▲|▼|\bLONG\b|\bSHORT\b|\bBUY\b|\bSELL\b")
+_LONG_TOKENS = {"▲", "LONG", "BUY"}
+
 
 def _is_numeric_text(s: "pd.Series") -> bool:
     """Is this object column a column of numbers written as text?
@@ -979,6 +983,7 @@ def render_data_table(
     col_labels: "dict[str, str] | None" = None,
     max_height: int = 520,
     row_height: int = TABLE_ROW_H,
+    direction_cols: "set[str] | None" = None,
 ) -> None:
     """Render a DataFrame as the app's one institutional table.
 
@@ -1046,9 +1051,18 @@ def render_data_table(
             cells.append(f'<th class="{cls}">{html_mod.escape(_header(c))}</th>')
         return "".join(cells)
 
+    direction_cols = direction_cols or set()
+
     def _value_html(c: str, val) -> str:
         p = col_precision.get(c, precision)
         text = _fmt_cell(val, p)
+        if c in direction_cols and text != "—":
+            # The direction, wherever it appears in the cell (a roll reads "SELL … · BUY …"),
+            # in the side's ink: ▲ / LONG / BUY long, ▼ / SHORT / SELL short. Only the token is
+            # inked — the glyph and the word stay, so a side is never told by colour alone.
+            return _DIRECTION_TOKEN.sub(
+                lambda m: f'<span style="color:{t["emerald"] if m.group(0) in _LONG_TOKENS else t["rose"]};'
+                          f'font-weight:600;">{m.group(0)}</span>', text)
         if c in sign_cols and c in text_numeric and text != "—":
             # A formatted number carries its sign as its first character.
             s = str(val).strip()[:1]
