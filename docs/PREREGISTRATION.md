@@ -274,3 +274,136 @@ as a directional rank had IC t −3.61 / −0.80 / −2.78 / −4.43 (fails vali
 (Horizon 20 is not available on the 2019–24 store; 5 and 10 were used.)
 F&O ban gate adopted (implementation): model book 0.78 → 0.74, 20 names 0.77 → 0.75,
 12 names 0.71 → 0.71, 6 names 0.31 → 0.27.
+
+## NIFTY breadth and regime workbook (registered 18 Nov 2026, before any outcome was computed)
+
+Source: a user-supplied NIFTY workbook (daily, Jun 2006 – Nov 2026): market-wide NSE
+advance/decline ratio (verified against NSE's equity bhavcopy: it counts all NSE stocks, not
+NIFTY 50), NIFTY close, PE/PB/DY, VIX, rates and macro. Its derived columns are recomputed
+causally from the raw inputs, with the workbook's own formulas, except:
+* the fair-PE regression is fitted on an expanding window (the workbook fits it on all of
+  2006–2026, so its PE_DEV, REGIME and SIGNAL_STR carry look-ahead), as a true multiple
+  regression on the workbook's selected variables (it sums univariate slopes), excluding
+  COUNT (selected despite its changelog), on PE adjusted for NSE's 31 Mar 2021 switch to
+  consolidated earnings (pre-switch PE × 33.20 / 40.43, the day's ratio net of the index move);
+* stale NIFTY prints are replaced by NSE closes where they disagree by more than 0.2%.
+
+Outcomes: (a) NIFTY spot excess return over repo, close d → close d+h, 2006–2026, in three
+periods P1 2006–2012, P2 2013–2018, P3 2019–2026; (b) NIFTY futures from the next open as in
+the index desk (2019–2026, discovery / validation / final). Newey–West t, h lags; z-scores over
+the previous 250 sessions. Primary horizon 5; valuation readings at 20.
+
+| # | Reading | Sign | Why |
+|---|---|---|---|
+| W1 | BREADTH (10-day EMA of advancing share) | + | broad participation |
+| W2 | REL_BREADTH | + | the same, smoothed across horizons |
+| W3 | REL_AD_RATIO | + | breadth momentum |
+| W4 | REGIME (causal) | + | the workbook's composite |
+| W5 | SIGNAL_STR (causal) | + | as the workbook reads it: buying pressure |
+| W6 | BTD events | + (next 10 sessions vs all days) | oversold bounce |
+| W7 | STT events | − | distribution at the top |
+| W8 | SPREAD flag (above 90- and 200-day MA by 1.5%) | + | trend |
+| W9 | PE_DEV (causal), h = 20 | − | cheap beats dear |
+| W10 | earnings yield − IN10Y, h = 20 | + | equity risk premium (Fed model) |
+| W11 | IN_YC (10y − 2y), h = 20 | + | curve steepness, growth |
+| W12 | COUNT (OSC − its 50-day mean) | + | the workbook's momentum count |
+
+Accept a reading if: registered sign with t ≥ 1 in P1, P2, P3 **and** |t| ≥ 2 on 2006–2026
+spot, **and** same sign with t ≥ 1 on 2019–2026 futures. Events (W6, W7): mean 10-session
+excess return after the event minus the unconditional mean, same rules.
+Strategies against S0 (long NIFTY futures always), net of 0.03% a side, 2019–2026 futures and
+2006–2026 spot: A1 long when causal REGIME > 0, flat otherwise; A2 long when BREADTH is above
+its 250-session median, flat otherwise. Adopted only if net Sharpe beats S0 in every period.
+
+### Workbook results (18 Nov 2026), recorded as computed
+
+Fidelity of the causal rebuild against the workbook (2008 on): breadth, rel_breadth, rel_ad,
+count correlation 1.000; RSI 0.9999; REGIME 0.78 and SIGNAL_STR 0.91 (the difference is the
+workbook's look-ahead fair PE). PE switch factor 0.830. Causal fair PE exists from Jul 2015
+(inflation series starts 2013). 7 stale NIFTY prints replaced. VAAYDO's own NSE advance/decline
+count from the equity bhavcopy matches the workbook's AD_RATIO at 0.978 (daily) and 0.998
+(10-day EMA of the advancing share), Jul 2024 – Nov 2026.
+
+t by reading (spot P1 / P2 / P3 / all; futures disc / val / final / all):
+W1 breadth 0.47/0.03/1.36/1.19; 1.63/−0.57/−0.57/1.33 · W2 rel_breadth 0.84/0.18/1.19/1.40;
+1.48/−0.56/−0.88/1.13 · W3 rel_ad 0.13/1.22/1.57/1.41; 0.58/0.89/0.95/1.20 · W4 regime
+0.86/−1.46/0.70/0.63; 0.91/−1.66/0.05/0.76 · W5 signal_str —/−0.64/0.18/−0.03; 0.38/−1.29/−0.03/0.25 ·
+W8 spread flag 2.46/−0.13/0.67/2.17; 0.18/−0.74/0.76/0.53 · W9 pe_dev (h 20, sign −)
+—/0.05/−0.80/−0.75; −0.88/−1.46/−0.23/−0.74 · W10 EY gap −0.24/0.45/0.81/0.45; −0.12/7.74/1.41/0.90
+(validation is 18 months of a slow variable: one observation, not evidence) · W11 yield curve
+1.86/−0.05/0.76/1.78; 1.61/0.93/0.59/0.71 · W12 count 1.66/−1.10/1.14/1.50; 0.46/1.42/0.87/1.09.
+**No reading accepted.**
+Events, 10-session excess return after the event minus all days: BTD −0.38% / −0.18% / −0.69%
+(214 events, t −0.68; futures −0.40%, t −0.42): buying the workbook's dips did worse than any
+day. STT +2.47% / +0.03% / +0.13% (86 events, t +1.47): returns after "sell the top" were
+higher, the opposite of the registered sign. Both rejected.
+Strategies, net Sharpe (spot P1 / P2 / P3 / all; futures disc / val / final / all):
+S0 long 0.34/0.31/0.41/0.34; 0.58/1.15/−0.22/0.45 · A1 long when regime > 0 0.85/0.12/0.29/0.49;
+0.86/0.33/−0.31/0.47 · **A2 long when breadth is above its 250-session median 0.72/0.31/0.90/0.66;
+1.33/1.00/−0.37/0.83**, in the market 49% of days. A2 beats or ties S0 on 2006–2026 spot in
+every period but loses to it on futures in validation and final: **not adopted**; added to the
+paper track from 18 Nov 2026, with the FII options stance and the high-IV condor.
+
+## NIFTY, Nishkarsh round (registered 18 Nov 2026, before any of these was computed)
+
+Nishkarsh (the owner's NIFTY research system) independently tested the same workbook and
+reached the same verdicts VAAYDO did: the fair-PE levels model is falsified (its signal
+inverted), macro inputs degrade it, and its predictive lead did not replicate on purged code.
+What VAAYDO takes from it is its inference standard and two ways to combine weak readings
+without fitting weights. All tests on NIFTY only; outcome = NIFTY futures from the next open
+(2019–2026) unless stated; h = 5 primary, 10 secondary.
+
+**Inference (adopted for these tests):** IC = mean of the h phase-wise Spearman ICs on
+non-overlapping h-spaced rows; Fisher t; Newey–West(h) t of the daily rank IC; 95%
+stationary block bootstrap CI (mean block 2h, seeded); yearly IC; the label's own 20-day
+momentum as a baseline; and the minimum detectable IC at 80% power, one-sided 5%.
+**Acceptance (Nishkarsh's rule):** HAC t ≥ 2, bootstrap CI excluding 0, ≥ 70% of years
+positive, IC above the momentum baseline; and, as a trade, a net Sharpe above always-long in
+every period with break-even cost ≥ 2× the 0.03% assumed.
+
+* **N1 re-grade** (descriptive, changes no earlier verdict): market breadth, A/D momentum, the
+  breadth rule A2, FII options stance; reported with their minimum detectable IC, so "no
+  edge" and "too little data to tell" are distinguished.
+* **N2 composite**: the equal-weight mean of every reading registered with a sign in rounds 1
+  and W (each z-scored over 250 sessions, sign applied as registered): trend 60d, Pragyam
+  trend, PCR OI, FII futures, −Client futures, FII options stance, −Client options stance,
+  hedge flow, VRP, VIX, skew, stock breadth, market breadth, relative breadth, A/D
+  momentum, ±1% count. No weights fitted, no reading chosen by its result.
+* **N3 precedent**: state = six family z-scores (60-day trend, market breadth, PCR OI, FII
+  options stance, 30-day IV, dealer gamma); for each day the 10 nearest past states by
+  Mahalanobis distance (OAS-shrunk covariance of the candidate pool), candidates only where
+  the h-forward outcome is realised, Theiler gap h; read = mean forward return of the
+  analogs minus the candidate pool's mean. First read after 500 candidates.
+* **N4 agreement**: two independent families, crowd/participant positioning (FII options
+  stance z) and market participation (breadth z): read = their common sign when they agree,
+  0 otherwise (Nishkarsh's signed-agreement idea, L-12, with VAAYDO's families).
+
+### Nishkarsh round results (18 Nov 2026), recorded as computed
+
+NIFTY futures 2019–2026, h = 5 (h = 10 in brackets). IC / n / minimum detectable IC / HAC t /
+95% bootstrap CI / years positive / momentum baseline IC:
+N1 market breadth 0.025 / 364 / 0.134 / 0.59 / [−0.06, +0.10] / 62% / 0.061 · A/D momentum
+0.012 / 0.60 · A2 rule 0.024 / 0.63 · **FII options stance 0.155 / HAC 3.97 / [+0.08, +0.23] /
+62% of years** (fails the 70% rule; period ICs +0.199 / −0.035 / +0.053) · N2 composite 0.088 /
+2.12 / [−0.001, +0.165] / 62% · **N3 precedent 0.106 / n 251 / MDE 0.161 / HAC 2.56 / [+0.03,
++0.19] / 83% of 6 / baseline 0.002: passes the statistical rule** (h 10: 0.110, 2.07, 67%, fails)
+· **N4 agreement 0.102 / 2.69 / [+0.02, +0.18] / 50%** (h 10: **0.122 / 2.44 / [+0.02, +0.22] /
+75% / baseline 0.077: passes**).
+Trades, tranche book h = 5, net Sharpe disc / val / final / all, break-even one-way cost:
+always long +0.59 / +1.15 / −0.25 / +0.45 · A2 +1.19 / +0.38 / −0.46 / +0.67, 38 bp ·
+N2 +0.65 / +0.25 / +0.71 / +0.60, 48 bp · N3 +0.33 / −0.77 / +1.23 / +0.49, 18 bp ·
+N4 +1.20 / −0.23 / +0.19 / +0.77, 41 bp. **None beats always-long in every period** (all lose in
+validation, 2023–mid 2024, a one-way rise): **no NIFTY trade adopted.**
+Reading: the combinations (N2–N4) all contain the FII options stance, so they are not
+independent confirmations of one another. Single readings' ICs (≈ 0.01–0.03 for breadth) are
+far below the 0.13 this history can detect: "rejected" there means unproven at this sample size.
+N3 and N4 join the paper track; the desk shows their state daily.
+Rerun on NSE-only data (18 Nov 2026): breadth rebuilt from NSE's equity bhavcopy (advances /
+declines of EQ-series stocks, Jun 2006 on, 5,073 sessions) and daily index-close file (NIFTY
+close, P/E, P/B, dividend yield, 2013 on). Against the workbook: NIFTY, P/E, P/B, DY identical
+(correlation 1.0000 on 2,704 sessions), A/D 0.984, 10-day breadth 0.993; the workbook's 20
+dates absent from NSE are weekends. Verdicts unchanged: N3 precedent h 5 IC 0.100, HAC 2.30,
+CI [+0.012, +0.181], 83% (passes); h 10 IC 0.126, HAC 2.43, CI [+0.019, +0.228], 83% (passes);
+N4 agreement h 10 IC 0.120, HAC 2.42 (passes); trades disc / val / final: A2 +1.16 / +0.60 /
+−0.40, N2 +0.56 / +0.20 / +0.63, N3 +0.16 / −1.23 / +1.40, N4 +1.20 / −0.11 / +0.17 against
+always-long +0.59 / +1.15 / −0.25. No NIFTY trade adopted. The desk now uses only NSE files.

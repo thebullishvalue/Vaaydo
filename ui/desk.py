@@ -4,7 +4,7 @@ The index desk view: NIFTY and BANKNIFTY, read on Graphite.
 Rendered by app.py when the Indices universe is run. It shows where the index options and
 futures market is positioned, how volatile it is priced, who holds what, and the evidence
 for every index trade VAAYDO tested. It gives no index trades: none passed (the Evidence
-tab says why), and two near-misses are tracked on paper.
+tab says why), and five candidates are tracked on paper.
 """
 from __future__ import annotations
 
@@ -204,6 +204,33 @@ def _futures(P, sym, start):
     ui.render_chart_panel(fig, f"futoi-{sym}", f"{sym} futures open interest", units="lakh units, all months")
 
 
+def _combined_reads(dk):
+    rd = getattr(dk, "reads", None) or {}
+    if not rd:
+        return
+    ui.render_section_header("NIFTY: combined reads (paper)", "Weak readings combined without fitted weights. Both pass the "
+                             "statistical bar on 2019–2026 but lost to simply holding NIFTY in 2023–24, so they are tracked, "
+                             "not traded.", icon="layers")
+    pr = rd.get("precedent", {})
+    stt = rd.get("state", {})
+    ag = rd.get("agreement", 0.0)
+    ui.render_kpi_strip([
+        dict(label="Agreement (FII stance × breadth)", value={1.0: "▲ both up", -1.0: "▼ both down"}.get(ag, "— disagree"),
+             subtext=f"FII stance z {stt.get('fii', np.nan):+.2f} · breadth z {stt.get('breadth', np.nan):+.2f}",
+             color_class="success" if ag > 0 else ("danger" if ag < 0 else "neutral")),
+        dict(label="Precedent, next 5 sessions", value=_pct(pr.get("read"), 2) if pr else "—",
+             subtext=(f"{pr['up']:.0%} of 10 analogs rose vs {pr['base_up']:.0%} usually · p {pr['p']:.2f}" if pr else "warming up"),
+             color_class="neutral" if not pr or pr["p"] >= 0.05 else ("success" if pr["read"] > 0 else "danger")),
+    ], max_cols=2, key="combined-reads")
+    if pr and pr.get("analogs"):
+        ui.render_data_table(pd.DataFrame([{"Past session": f"{pd.Timestamp(d):%d %b %Y}", "NIFTY futures, next 5 sessions": _pct(o, 2),
+                                            "Distance": f"{dist:.2f}"} for d, o, dist in pr["analogs"]]),
+                             show_index=False, label_col="Past session", max_height=300)
+        st.markdown('<div class="panel-copy">The ten past sessions whose trend, breadth, PCR, FII stance, IV and dealer gamma '
+                    'looked most like today\'s (Mahalanobis distance, distinct episodes, outcomes known at the time).</div>',
+                    unsafe_allow_html=True)
+
+
 def _evidence(dk):
     T = dk.tests
     ui.render_section_header("Every index trade VAAYDO tested", "Registered before testing (docs/PREREGISTRATION.md). "
@@ -259,6 +286,50 @@ def _evidence(dk):
                                            "Mean per cycle": summ["mean"].map(lambda v: _pct(v, 1)),
                                            "Won": summ["won"].map(lambda v: _pct(v, 0, False)),
                                            "Worst": summ["worst"].map(lambda v: _pct(v, 0))}), show_index=False, label_col="Structure")
+    W = getattr(dk, "wb_tests", None)
+    if W is not None and len(W):
+        ui.render_section_header("NIFTY breadth and regime workbook", "Every column rebuilt causally (the workbook's fair PE "
+                                 "was fitted on all of 2006–2026). Spot 2006–2026 in three periods, then NIFTY futures 2019–2026.",
+                                 icon="layers")
+        w = W.copy()
+        for c in ("P1", "P2", "P3", "all", "disc", "vali", "fina", "fut"):
+            w[c] = w[c].round(2)
+        w["Verdict"] = np.where(w["accept"], "passes", "rejected")
+        ui.render_data_table(w.rename(columns={"reading": "Reading", "sign": "Sign", "P1": "2006–12", "P2": "2013–18", "P3": "2019–26",
+                                               "all": "Spot all", "disc": "Fut disc", "vali": "Fut val", "fina": "Fut final",
+                                               "fut": "Fut all"}).drop(columns=["accept"]), show_index=False, label_col="Reading")
+        ui.render_data_table(pd.DataFrame([
+            {"Rule": "S0 long, always", "2006–12": 0.34, "2013–18": 0.31, "2019–26": 0.41, "Fut disc": 0.58, "Fut val": 1.15, "Fut final": -0.22},
+            {"Rule": "A1 long when regime > 0", "2006–12": 0.85, "2013–18": 0.12, "2019–26": 0.29, "Fut disc": 0.86, "Fut val": 0.33, "Fut final": -0.31},
+            {"Rule": "A2 long when breadth > 1-year median (paper)", "2006–12": 0.72, "2013–18": 0.31, "2019–26": 0.90,
+             "Fut disc": 1.33, "Fut val": 1.00, "Fut final": -0.37},
+        ]), show_index=False, label_col="Rule")
+        st.markdown('<div class="panel-copy">Net Sharpe. A2 doubles the long-run spot Sharpe in half the time, but loses to '
+                    'plain long on futures in 2023–24 and since mid-2024, so it is tracked on paper. After the workbook\'s '
+                    'dip signal, returns were <em>lower</em> than on an average day; after its top signal, higher.</div>',
+                    unsafe_allow_html=True)
+    N = getattr(dk, "ntests", None)
+    if N is not None and len(N):
+        ui.render_section_header("NIFTY at Nishkarsh's standard", "Non-overlapping ICs averaged over start offsets, Newey–West t, "
+                                 "block-bootstrap CI, years positive, against NIFTY's own momentum, with the smallest IC this "
+                                 "history can detect (MDE). Statistical pass: HAC t ≥ 2, CI above 0, ≥ 70% of years, above momentum.",
+                                 icon="shield")
+        n = N.copy()
+        for c in ("IC", "MDE", "HAC t", "mom IC", "IC disc", "IC vali", "IC fina"):
+            n[c] = n[c].round(3)
+        n["accept"] = np.where(n["accept"], "passes", "—")
+        ui.render_data_table(n.rename(columns={"read": "Read", "accept": "Statistical pass", "yrs+": "Years +"}),
+                             show_index=False, label_col="Read")
+        ui.render_data_table(pd.DataFrame([
+            {"Trade (h = 5 tranches)": "Always long", "Disc": 0.59, "Val": 1.15, "Final": -0.25, "All": 0.45, "Break-even": "—"},
+            {"Trade (h = 5 tranches)": "A2 breadth > median", "Disc": 1.19, "Val": 0.38, "Final": -0.46, "All": 0.67, "Break-even": "38 bp"},
+            {"Trade (h = 5 tranches)": "N2 composite", "Disc": 0.65, "Val": 0.25, "Final": 0.71, "All": 0.60, "Break-even": "48 bp"},
+            {"Trade (h = 5 tranches)": "N3 precedent", "Disc": 0.33, "Val": -0.77, "Final": 1.23, "All": 0.49, "Break-even": "18 bp"},
+            {"Trade (h = 5 tranches)": "N4 agreement", "Disc": 1.20, "Val": -0.23, "Final": 0.19, "All": 0.77, "Break-even": "41 bp"},
+        ]), show_index=False, label_col="Trade (h = 5 tranches)")
+        st.markdown('<div class="panel-copy">Net Sharpe on NIFTY futures. Every combination loses to plain long in 2023–24. '
+                    'They all contain the FII options stance, so they are not independent confirmations. Single readings '
+                    'sit far below the detectable IC (0.13 at 5 sessions): unproven, not disproven.</div>', unsafe_allow_html=True)
     ui.render_section_header("Rejected myths", icon="alert-triangle")
     ui.render_kv_table({
         "Max pain pulls the index into expiry": "spot moved toward max pain in 47.5% of 737 expiries",
@@ -266,6 +337,51 @@ def _evidence(dk):
         "Writers' hedging pushes the future": "wrong sign in two of three periods",
         "High PCR is bullish": "t 1.6 / −0.8 / 1.2: not reliable",
     }, header_left="Claim", header_right="What 2019–2026 says")
+
+
+def _breadth(dk, start):
+    B = dk.breadth
+    if B is None or B.empty:
+        ui.render_empty_state("No breadth history", "The breadth inputs are not in this bundle.", eyebrow="Breadth")
+        return
+    B = B.copy()
+    B["median"] = B["breadth"].rolling(250, min_periods=120).median()
+    r = B.iloc[-1]
+    ui.render_kpi_strip([
+        dict(label="Advance / decline", value=f"{r['AD_RATIO']:.2f}", subtext=f"all NSE stocks · {pd.Timestamp(r['DATE']):%d %b}"),
+        dict(label="Breadth (10-day EMA)", value=_pct(r["breadth"], 1, False), subtext=f"1-year median {_pct(r['median'], 1, False)}",
+             color_class="success" if r["breadth"] > r["median"] else "danger"),
+        dict(label="Regime", value=f"{r['regime']:+.1f}", subtext="RSI + breadth + trend zones, −3 … +3"),
+        dict(label="RSI 14", value=f"{r['rsi']:.1f}", subtext=f"bands {_num(r['lower'])} – {_num(r['upper'])}"),
+        dict(label="NIFTY P/E", value=f"{r['NIFTY50_PE']:.2f}" if np.isfinite(r.get("NIFTY50_PE", np.nan)) else "—",
+             subtext=f"P/B {r.get('NIFTY50_PB', np.nan):.2f} · dividend yield {r.get('NIFTY50_DY', np.nan):.2f}%"),
+    ], key="breadth-kpi")
+    h = B[B["DATE"] >= start]
+    fig = go.Figure()
+    fig.add_scatter(x=h["DATE"], y=h["breadth"] * 100, name="Breadth (10-day EMA)", line_color=chart_color("accent"))
+    fig.add_scatter(x=h["DATE"], y=h["median"] * 100, name="1-year median", line_color=chart_color("amber"), line_dash="dot")
+    fig.update_layout(**chart_layout(height=300))
+    ui.render_chart_panel(fig, "breadth", "Market breadth: share of NSE stocks advancing", units="%")
+    fig = go.Figure()
+    fig.add_scatter(x=h["DATE"], y=h["NIFTY"], name="NIFTY", line_color=chart_color("slate"))
+    on = h[h["breadth"] > h["median"]]
+    fig.add_scatter(x=on["DATE"], y=on["NIFTY"], mode="markers", marker=dict(size=3, color=chart_color("emerald")),
+                    name="breadth above median")
+    for col, nm, c in (("btd", "dip signal", "amber"), ("stt", "top signal", "rose")):
+        ev = h[h[col] > 0]
+        fig.add_scatter(x=ev["DATE"], y=ev["NIFTY"], mode="markers", marker=dict(size=8, symbol="diamond", color=chart_color(c)), name=nm)
+    fig.update_layout(**chart_layout(height=320))
+    ui.render_chart_panel(fig, "breadth-nifty", "NIFTY with the breadth state and the dip / top signals", units="index")
+    rows = [("Advancing share today", _pct(r["adv_share"], 1, False)), ("Relative breadth", _pct(r["rel_breadth"], 1, False)),
+            ("A/D momentum", f"{r['rel_ad']:+.2f}"), ("Above 90-day MA", _pct(r["spread90"] / 100, 1)),
+            ("Above 200-day MA (8d lag)", _pct(r["spread200"] / 100, 1)), ("±1% day count vs 50-day mean", f"{r['count']:+.1f}"),
+            ("20-day realised vol", _pct(r["rvol20"] / 100, 1, False)), ("Signal strength", f"{r['signal_str']:+.2f}"),
+            ("Earnings yield", _pct(1 / r["NIFTY50_PE"], 2, False) if np.isfinite(r.get("NIFTY50_PE", np.nan)) else "—"),
+            ("Dip / top signal today", "dip" if r["btd"] else ("top" if r["stt"] else "none"))]
+    ui.render_kv_table(dict(rows), header_left="Reading", header_right="Now")
+    st.markdown('<div class="panel-copy">Advance/decline counts every NSE stock (the bhavcopy), so breadth reads the '
+                'whole market, small caps included, not NIFTY\'s fifty. Everything here is computed from NSE\'s own daily '
+                'files (equity bhavcopy and index closes).</div>', unsafe_allow_html=True)
 
 
 def render(dk, meta: dict):
@@ -278,10 +394,10 @@ def render(dk, meta: dict):
                                   ("BANKNIFTY", _num(b.get("spot"), 2)), ("India VIX", _num(vix, 2))])
     notices = [dict(kind="info", title="The desk gives no index trades",
                     body="Every directional reading and both premium-selling structures were tested on 2019–2026 and failed "
-                         "(Evidence tab). Two near-misses are tracked on paper from 18 Nov 2026, never with capital.")]
+                         "(Evidence tab). Five candidates (FII options stance, high-IV condor, market breadth, precedent, agreement) are tracked on paper from 18 Nov 2026, never with capital.")]
     notices += [dict(kind="info", title="Note", body=html.escape(x)) for x in dk.notes]
     ui.render_notice_rail(notices)
-    tabs = st.tabs(["Desk", "Gamma & OI", "Volatility", "Participants", "Futures & Rollover", "Evidence"])
+    tabs = st.tabs(["Desk", "Breadth", "Gamma & OI", "Volatility", "Participants", "Futures & Rollover", "Evidence"])
     with tabs[0]:
         c1, c2 = st.columns(2, gap="small")
         with c1:
@@ -300,6 +416,14 @@ def render(dk, meta: dict):
                 "Top-decile IV line": pp["iv_q90"].map(lambda v: _pct(v, 1, False)),
                 "Paper condor": pp["stress"].map(lambda s: "sell this cycle (IV in top decile)" if s else "stand aside"),
             }), show_index=False, label_col="Index")
+        B = dk.breadth
+        if B is not None and len(B):
+            med = B["breadth"].rolling(250, min_periods=120).median().iloc[-1]
+            b = B["breadth"].iloc[-1]
+            st.markdown('<div class="panel-copy">Breadth candidate (paper): NIFTY long while market breadth is above its '
+                        f'one-year median, flat otherwise. Today breadth {b:.1%} against {med:.1%}: '
+                        f'<strong>{"paper long" if b > med else "paper flat"}</strong>.</div>', unsafe_allow_html=True)
+        _combined_reads(dk)
         ui.render_section_header("Readings against their own last year", icon="grid")
         rows = []
         for sym in ("NIFTY", "BANKNIFTY"):
@@ -313,6 +437,8 @@ def render(dk, meta: dict):
                              "Percentile, 250 sessions": _pct(_pctile(h[col], v), 0, False)})
         ui.render_data_table(pd.DataFrame(rows), show_index=False, label_col="Index")
     with tabs[1]:
+        _breadth(dk, start)
+    with tabs[2]:
         sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_oi")
         v = dk.views.get(sym)
         if not v:
@@ -329,7 +455,7 @@ def render(dk, meta: dict):
             ], key=f"oi-kpi-{sym}")
             _oi_chart(v, sym, r)
             _gex_chart(v, sym, r)
-    with tabs[2]:
+    with tabs[3]:
         sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_vol")
         h = P[P["symbol"] == sym].sort_values("date")
         r = h.iloc[-1]
@@ -354,10 +480,10 @@ def render(dk, meta: dict):
                               annotation_text=f"{int(q * 100)}th pct, 1y")
             fig.update_layout(**chart_layout(height=260, show_legend=False))
             ui.render_chart_panel(fig, "vix", "India VIX", units="index")
-    with tabs[3]:
-        _participants(dk, start)
     with tabs[4]:
+        _participants(dk, start)
+    with tabs[5]:
         sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_fut")
         _futures(P, sym, start)
-    with tabs[5]:
+    with tabs[6]:
         _evidence(dk)

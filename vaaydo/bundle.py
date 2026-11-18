@@ -150,6 +150,13 @@ def refresh_index(new_days, progress=print) -> None:
         add = [(pd.Timestamp(d), s) for d in new_days for s in ((banlist.day(d) or []) + [""])]
         pd.concat([B, pd.DataFrame(add, columns=["date", "symbol"])], ignore_index=True).drop_duplicates() \
             .to_parquet(b, index=False)
+    br = ROOT / "breadth_nse.parquet"
+    if br.exists() and p.exists():
+        from . import breadth as BR
+        raw = pd.read_parquet(br)
+        P = pd.read_parquet(p)
+        spot = P[P["symbol"] == "NIFTY"].assign(date=lambda x: pd.to_datetime(x["date"])).set_index("date")["spot"]
+        BR.extend_live(raw, spot, [pd.Timestamp(d) for d in new_days]).to_parquet(br, index=False, compression="zstd")
     v = ROOT / "vix.parquet"
     try:
         x = I.yahoo("VIX", start="2018-01-01")

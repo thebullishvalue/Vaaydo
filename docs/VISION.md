@@ -101,9 +101,20 @@ the two indices, read every session from NSE's own files:
 condor and an iron fly were registered and tested on 2019–2026 (docs/PREREGISTRATION.md).
 None passed. Being long index futures (SR 0.36) beat every rule; selling the volatility
 premium lost after real fills. A desk that showed trades anyway would be guessing with
-money. Two near-misses — the FII options stance and a condor sold only when IV is in its top
+money. Three near-misses — the FII options stance, long-when-market-breadth-is-strong (from the NIFTY
+workbook) and a condor sold only when IV is in its top
 decile — are tracked on paper from 18 Nov 2026 and promoted only if they earn it out of sample.
 
 What the index desk *is* for: knowing where the index market is positioned before acting on
 a stock ticket (gamma regime, walls, priced move, who is short what), and an honest,
 growing record of what does and does not work on NIFTY and BANKNIFTY.
+
+### NIFTY after the breadth workbook and Nishkarsh (v7.1)
+
+Breadth is computed from NSE's own files: advances and declines of every NSE stock from the
+equity bhavcopy (2006 on), NIFTY's close and its P/E, P/B and dividend yield from the daily
+index-close file (2013 on). Nothing on the desk depends on a hand-kept sheet. Nishkarsh's
+inference (non-overlapping ICs, HAC and bootstrap, the detectable effect) now grades the
+NIFTY evidence, and its two combiners run daily on VAAYDO's readings: the precedent of the
+ten most similar past states, and the agreement of FII options stance with market breadth.
+Both pass the statistical bar; neither beat holding NIFTY through 2023–24; both are on paper.

@@ -27,6 +27,34 @@ PART_B = ROOT / "participant_oi.parquet"
 TESTS_B = ROOT / "index_tests.parquet"
 CYCLES_B = ROOT / "index_cycles.parquet"
 VIX_B = ROOT / "vix.parquet"
+BREADTH_B = ROOT / "breadth_nse.parquet"   # NSE A/D (2006 on) and NIFTY close/PE/PB/DY (2013 on)
+WB_TESTS_B = ROOT / "workbook_tests.parquet"
+NROUND_B = ROOT / "nifty_combined_tests.parquet"
+IFUT_B = ROOT / "index_futures.parquet"
+
+
+def nifty_reads(P: pd.DataFrame, pf: pd.DataFrame, B: pd.DataFrame) -> dict:
+    """Today's paper reads of the combined NIFTY candidates (precedent N3, agreement N4)."""
+    from . import index_research as IR, inference as INF
+    if not IFUT_B.exists() or B is None or B.empty or pf is None or pf.empty:
+        return {}
+    F = pd.read_parquet(IFUT_B)
+    F = F[F["symbol"] == "NIFTY"]
+    F["date"] = pd.to_datetime(F["date"])
+    R = IR.continuous(F).set_index("date")
+    n = P[P["symbol"] == "NIFTY"].set_index("date").sort_index()
+    X = n.join(R[["r_oo"]], how="left").join(pf, how="left")
+    X = X.join(B.set_index("DATE")[["breadth"]].rename(columns={"breadth": "w_breadth"}), how="left")
+    X["fwd5"] = np.exp(np.log1p(X["r_oo"]).rolling(5).sum().shift(-5)) - 1
+    z = IR.zscore
+    state = pd.DataFrame({"trend": z(np.log(X["spot"] / X["spot"].shift(60))), "breadth": z(X["w_breadth"]),
+                          "pcr": z(X["pcr_oi"]), "fii": z(X["fii_opt_bias"]), "iv": z(X["iv_30"]),
+                          "gamma": z(X["gex_dealer"])})
+    out = {"state": state.iloc[-1].to_dict(), "date": X.index[-1]}
+    out["precedent"] = INF.precedent_now(state, X["fwd5"], 5)
+    a, b = np.sign(state["fii"].iloc[-1]), np.sign(state["breadth"].iloc[-1])
+    out["agreement"] = float(a) if np.isfinite(a) and a == b else 0.0
+    return out
 PAPER_START = pd.Timestamp("2026-11-18")
 
 
@@ -41,6 +69,10 @@ class Desk:
     paper: pd.DataFrame                 # candidate states per symbol
     tests: pd.DataFrame
     cycles: pd.DataFrame
+    breadth: pd.DataFrame = field(default_factory=pd.DataFrame)   # market breadth and the workbook's readings
+    wb_tests: pd.DataFrame = field(default_factory=pd.DataFrame)
+    reads: dict = field(default_factory=dict)                     # combined NIFTY candidates, paper
+    ntests: pd.DataFrame = field(default_factory=pd.DataFrame)
     notes: list = field(default_factory=list)
 
 
@@ -110,6 +142,16 @@ def _bundle_or_store(bundle_path, store_path) -> pd.DataFrame:
         if p.exists():
             return pd.read_parquet(p)
     return pd.DataFrame()
+
+
+def breadth_state(B: pd.DataFrame) -> dict:
+    """The breadth candidate (paper): long NIFTY when breadth is above its 250-session median."""
+    if B is None or B.empty:
+        return {}
+    med = B["breadth"].rolling(250, min_periods=120).median()
+    last = B.iloc[-1]
+    return dict(date=last["DATE"], breadth=float(last["breadth"]), median=float(med.iloc[-1]),
+                long=bool(last["breadth"] > med.iloc[-1]))
 
 
 def paper_state(P: pd.DataFrame, pf: pd.DataFrame) -> pd.DataFrame:
@@ -191,8 +233,32 @@ def run(asof: date | None = None, progress=None) -> Desk:
         except Exception as e:
             notes.append(f"{s} chain view failed: {str(e)[:80]}")
     say(90, "verdicts")
+    say(85, "market breadth")
+    B = pd.DataFrame()
+    if BREADTH_B.exists():
+        from . import breadth as BR
+        raw = pd.read_parquet(BREADTH_B)
+        raw["DATE"] = pd.to_datetime(raw["DATE"])
+        raw = raw[raw["DATE"] <= A]
+        spot = P[P["symbol"] == "NIFTY"].set_index("date")["spot"]
+        newer = [d for d in spot.index if d > raw["DATE"].max()]
+        try:
+            raw = BR.extend_live(raw, spot, newer[-30:])
+        except Exception as e:
+            notes.append(f"Breadth could not be extended past {raw['DATE'].max():%d %b}: {str(e)[:80]}")
+        B = BR.features(raw)
+        if B["DATE"].max() < A:
+            notes.append(f"Market breadth is through {B['DATE'].max():%d %b}.")
     tests = pd.read_parquet(TESTS_B) if TESTS_B.exists() else pd.DataFrame()
     cycles = pd.read_parquet(CYCLES_B) if CYCLES_B.exists() else pd.DataFrame()
     part_raw = Pt[Pt["date"] == Pt["date"].max()] if len(Pt) else Pt
+    wb = pd.read_parquet(WB_TESTS_B) if WB_TESTS_B.exists() else pd.DataFrame()
+    nt = pd.read_parquet(NROUND_B) if NROUND_B.exists() else pd.DataFrame()
+    try:
+        reads = nifty_reads(P, pf, B)
+    except Exception as e:
+        reads = {}
+        notes.append(f"Combined NIFTY reads unavailable: {str(e)[:80]}")
     return Desk(asof=A, panel=P, participants=pf, part_raw=part_raw, vix=vix, views=views,
-                paper=paper_state(P, pf), tests=tests, cycles=cycles, notes=notes)
+                paper=paper_state(P, pf), tests=tests, cycles=cycles, breadth=B, wb_tests=wb, reads=reads,
+                ntests=nt, notes=notes)

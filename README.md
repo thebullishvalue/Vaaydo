@@ -18,7 +18,11 @@ in which contract, at what price, with a stop.
   participants (FII / DII / Pro / Client), and the evidence. **It gives no index trades:**
   every index hypothesis VAAYDO registered — sixteen directional readings, trend and
   volatility-managed futures, an iron condor and an iron fly on real fills — failed on
-  2019–2026 (docs/PREREGISTRATION.md). Two near-misses are tracked on paper.
+  2019–2026 (docs/PREREGISTRATION.md). Market breadth (NSE advance/decline, 2006 on) and
+  the owner's Nishkarsh standard of inference were added: combining weak readings
+  without fitted weights (nearest-past-state precedent; FII stance × breadth agreement)
+  passes the statistical bar, but no combination beat simply holding NIFTY in 2023–24,
+  so none trades. Five candidates are tracked on paper and shown daily.
 
 ## What a run returns (F&O Stocks)
 
@@ -97,6 +101,8 @@ vaaydo/
   banlist.py            NSE F&O ban list (entries wait out a ban)
   indices.py            the index desk's readings: chain, gamma, volatility, futures, participants
   index_desk.py         one desk run: history + newer sessions, chain views, paper candidates
+  breadth.py            market breadth from NSE's equity bhavcopy and index closes, 2006 on
+  inference.py          non-overlapping IC, HAC t, block bootstrap, detectable IC, precedent, tranche backtest
   index_research.py · index_options.py · gamma.py   the index and gamma tests
   pragyam.py            Pragyam risk engine (thebullishvalue/Indicator), verbatim
   data/                 NSE F&O bhavcopy (UDiFF + legacy), equity bhavcopy, Yahoo history
