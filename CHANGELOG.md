@@ -11,6 +11,31 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.3.6] — 2026-11-18 — *The family console*
+### Changed
+- **One console, shared by the family.** `vaaydo/logger_config.py` is now the family console, the same file
+  in all nine apps, as the fidelity block of `theme.css` is for the page. Seven consoles had grown
+  from one design (five copies of the same module, two more embedded in Samhita and Swing) and
+  drifted: rules 60 and 70 wide, phases written three ways, timers rounded to whole seconds
+  ("[0s]"), colour codes written into captured logs, a second run id printed under the first.
+- **One grammar.** The product's banner once per process; a run's masthead (title, version, one
+  run id, its start); its inputs in a labelled block; numbered phases with their time; numbered
+  steps that close with what they produced and how long they took; labels in one column, long
+  values wrapping under it at 72 columns; ✓ ⚠ ✗ ℹ in their colours; result cards; and a closing
+  line, RUN COMPLETE or RUN FAILED, with the run's time and its warning and error counts.
+- **Library output joins the run.** yfinance's HTTP errors (`HTTP Error 401: Unauthorized{"finance":
+  …}`), its "possibly delisted" notices and Python warnings (a pandas RuntimeWarning with its full
+  site-packages path) printed raw into the middle of a run. Each now arrives as one dimmed ⚠ line
+  naming its source, once per run, counted as a warning.
+- **Colour only on a terminal**, so a captured log is plain text (`NO_COLOR` / `FORCE_COLOR` honoured).
+- **VAAYDO wrote nothing of its own to the terminal** (only yfinance's raw errors). Every computed
+  run, screener or index desk, is now a family run: its request, each engine step numbered and
+  timed, a result card (orders, book, watchlist, contracts, closed trades, the ban list, renames;
+  the desk's readings and tests) and the engine's notes. A run served from the hour's store
+  prints nothing.
+
+---
+
 ## [7.3.5] — 2026-11-18 — *A progress bar that moves*
 
 An audit of the run's progress card against every member's, step by step on real runs.

@@ -20,10 +20,11 @@ warnings.filterwarnings("ignore")
 import ui.components as ui
 from ui.theme import inject_css, progress_bar, chart_layout, style_axes, chart_color
 from vaaydo import curator, index_desk, signal
+from vaaydo.logger_config import console, capture_library_output, route_logging
 import ui.desk as desk_view
 from vaaydo.universe import UNIVERSES, constituents
 
-VERSION = "7.3.5"
+VERSION = "7.3.6"
 STOCKS, INDICES = "F&O Stocks", "Indices · NIFTY & BANKNIFTY"
 st.set_page_config(page_title="VAAYDO | F&O Trade Screener", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
@@ -46,6 +47,11 @@ def theme_choice() -> str:
 
 st.session_state["theme"] = "light" if theme_choice() == "Paper" else "dark"
 inject_css(theme=st.session_state["theme"])
+# The terminal: the masthead once per process, yfinance and the engine's own log in the run trace.
+capture_library_output()
+route_logging(console, names=("vaaydo",))
+console.banner("VAAYDO", VERSION, "F&O Trade Screener · Option Positioning · Stock Futures",
+               {"Data": "NSE end-of-day archives · data/ bundle since Jul 2024"})
 
 
 def render_appearance_control() -> None:
@@ -222,6 +228,58 @@ def step(slot, pct: int, key: str) -> None:
     progress_bar(slot, pct, label, sub)
 
 
+def traced(slot, title: str, request: dict, compute, summarize):
+    """``compute`` as a family-console run: its request, each engine step as a numbered, timed
+    step (the progress hook opens them), a card of what it produced, and the closing line.
+    Called only when a run is actually computed: a run served from the hour's store prints nothing."""
+    def go():
+        console.header(f"VAAYDO · {title}", VERSION)
+        console.main_header("Request", request)
+
+        def hook(p, key):
+            step(slot, p, key)
+            label, sub = _STEPS.get(key.lower(), (key, ""))
+            console.begin_step(label, sub)
+        try:
+            out = compute(hook)
+        except Exception as e:
+            console.end_step(f"{type(e).__name__}: {e}", "fail")
+            console.end_run("FAILED")
+            raise
+        console.end_step()
+        card, notes = summarize(out)
+        console.summary("Result", card)
+        for n in notes:
+            console.info(n)
+        console.end_run()
+        return out
+    return go
+
+
+def _run_card(r) -> tuple[dict, list]:
+    p, sc = r.positions, r.screen
+    act = p["action"].value_counts() if len(p) and "action" in p else pd.Series(dtype=int)
+    ready = int(sc["state"].isin(["READY ▲", "READY ▼"]).sum()) if len(sc) and "state" in sc else 0
+    nb_date, nb = r.ban_next
+    return ({"As of": f"{r.asof:%Y-%m-%d}", "Screened": f"{len(sc)} F&O stocks",
+             "Orders": f"{int(act.get('ENTER', 0))} enter · {int(act.get('EXIT', 0))} exit",
+             "Book": f"{int((p['action'] != 'EXIT').sum()) if len(p) else 0} positions after the next open",
+             "Watchlist": f"{ready} near an entry", "Option contracts": f"{len(r.contracts):,}",
+             "Closed trades": f"{len(r.trades):,} since the bundle start",
+             **({"F&O ban": f"{len(nb or [])} name{'s' * (len(nb or []) != 1)} for {nb_date:%Y-%m-%d}"} if nb_date else {}),
+             **({"Renamed": ", ".join(f"{o} → {n}" for n, (o, _) in r.renames.items())} if r.renames else {})},
+            list(r.notes))
+
+
+def _desk_card(d) -> tuple[dict, list]:
+    syms = ", ".join(sorted(d.views)) if d.views else "none"
+    return ({"As of": f"{d.asof:%Y-%m-%d}", "Index history": f"{len(d.panel):,} rows",
+             "Participants": f"{len(d.participants):,} sessions", "India VIX": f"{len(d.vix):,} sessions",
+             "Option chains": syms, "Breadth": f"{len(d.breadth):,} sessions",
+             "Registered tests": f"{len(d.tests)} + {len(d.wb_tests)} workbook + {len(d.ntests)} NIFTY"},
+            list(d.notes))
+
+
 @st.cache_data(show_spinner=False)
 def track() -> pd.DataFrame:
     return pd.read_parquet(TRACK)
@@ -240,8 +298,9 @@ if run_clicked and kind == INDICES:
     try:
         step(slot, 5, "reading the index chains")
         dk = cached("desk", key, datetime.now().strftime("%Y-%m-%d %H"),
-                    lambda: index_desk.run(None if key == "latest" else date.fromisoformat(key),
-                                           progress=lambda p, label: step(slot, p, label)), keep=4)
+                    traced(slot, "Index desk", {"Indices": "NIFTY · BANKNIFTY", "As of": key, "Mode": mode},
+                           lambda hook: index_desk.run(None if key == "latest" else date.fromisoformat(key),
+                                                       progress=hook), _desk_card), keep=4)
         step(slot, 100, "desk ready")
         st.session_state["desk"] = dk
         st.session_state["view"] = INDICES
@@ -256,7 +315,8 @@ elif run_clicked:
     try:
         step(slot, 3, "loading the bundle")
         r = cached("run", key, datetime.now().strftime("%Y-%m-%d %H"),
-                   lambda: curator.run(None if key == "latest" else asof, progress=lambda p, label: step(slot, p, label)))
+                   traced(slot, "F&O screener", {"Universe": universe, "As of": key, "Mode": mode},
+                          lambda hook: curator.run(None if key == "latest" else asof, progress=hook), _run_card))
         step(slot, 100, "analysis complete")
         st.session_state["run"] = r
         st.session_state["run_meta"] = dict(universe=universe, mode=mode, start=start, asof=asof)
