@@ -11,6 +11,17 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.3.3] — 2026-11-18 — *The index picker without its label*
+
+### Changed
+- **The NIFTY · BANKNIFTY picker has no visible label**, as no segmented control in the family
+  does (the chart-window strip, the appearance switch). The options name themselves, and every
+  chart under the picker names its index. Shown, the "INDEX" label sat inside the control's
+  bordered track, so the box carried an empty band above and to the right of the buttons; the
+  track now wraps the two buttons alone. The label is kept for screen readers.
+
+---
+
 ## [7.3.2] — 2026-11-18 — *Sides in their ink, positions by the day they opened*
 
 An audit of every table for the order its rows come in and for how it says a side.

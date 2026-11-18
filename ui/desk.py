@@ -63,10 +63,17 @@ def _side(v) -> str:
 
 
 def _index_picker(key: str) -> str:
-    """NIFTY or BANKNIFTY, as the family's segmented control (a radio drew Streamlit's own type)."""
+    """NIFTY or BANKNIFTY, as the family's segmented control (a radio drew Streamlit's own type).
+
+    No visible label, as on every segmented control in the family (the window strip, the
+    appearance switch): the options name themselves and every chart below names its index. A
+    visible label also sat INSIDE the control's bordered track, so the box carried an empty band
+    above and right of the buttons. The label stays for screen readers.
+    """
     pick, _ = st.columns([1, 2])
     with pick:
-        v = st.segmented_control("Index", list(INDEXES), default=INDEXES[0], key=key)
+        v = st.segmented_control("Index", list(INDEXES), default=INDEXES[0], key=key,
+                                 label_visibility="collapsed")
     return v or INDEXES[0]
 
 
