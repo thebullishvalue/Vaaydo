@@ -11,6 +11,17 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.3.4] — 2026-11-18 — *Paper first*
+
+### Changed
+- **Paper is the first-run appearance**, as in Tattva, Nishkarsh, Nivesa, Pragyam, Arthagati,
+  Samhita and Swing; the switch reads PAPER · SLATE. VAAYDO had inherited Sanket's Slate-first
+  order. A choice once made is kept for the session, as before. Streamlit's native layer stays
+  on the dark base, as in every member: the stylesheet is built Slate-first and Paper's tokens
+  reclaim the natives.
+
+---
+
 ## [7.3.3] — 2026-11-18 — *The index picker without its label*
 
 ### Changed

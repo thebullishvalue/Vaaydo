@@ -23,7 +23,7 @@ from vaaydo import curator, index_desk, signal
 import ui.desk as desk_view
 from vaaydo.universe import UNIVERSES, constituents
 
-VERSION = "7.3.3"
+VERSION = "7.3.4"
 STOCKS, INDICES = "F&O Stocks", "Indices · NIFTY & BANKNIFTY"
 st.set_page_config(page_title="VAAYDO | F&O Trade Screener", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
@@ -32,9 +32,10 @@ st.set_page_config(page_title="VAAYDO | F&O Trade Screener", page_icon="⚡", la
 # The choice lives in a DURABLE session key, never a widget key: Streamlit drops the state
 # of a widget that a run did not reach, and the switch sits at the foot of the rail, below
 # RUN. It is read here, before anything is styled, so chrome and charts agree on one theme
-# for the whole run. Slate leads (a screener is a working surface); config.toml's dark
-# base agrees with it.
-APPEARANCES = ("Slate", "Paper")
+# for the whole run. Paper leads, as in every member of the family but Sanket: the order is the
+# default and the switch's left-to-right order, one fact. config.toml's base stays dark, as in
+# Tattva: theme.css is built Slate-first and LIGHT_TOKENS reclaims the natives for Paper.
+APPEARANCES = ("Paper", "Slate")
 _THEME_CHOICE = "theme_choice"
 
 
