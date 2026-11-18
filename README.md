@@ -93,7 +93,9 @@ missing days itself.
 
 Inputs that NSE's nightly files don't carry are checked by `scripts/check_inputs.py`: the
 holiday list ahead (which sets roll dates) and the sector map. Say **panchang** in a Claude
-session to run the update routine (`.claude/skills/panchang`).
+session to run the update routine (`.claude/skills/panchang`); without Claude, the same
+routine is `python scripts/panchang.py` (`--holidays circular.txt` loads a year's NSE holiday
+list from the circular's text; `--check-only` changes nothing).
 
 ## Layout
 

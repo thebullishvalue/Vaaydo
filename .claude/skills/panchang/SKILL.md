@@ -9,6 +9,10 @@ The nightly refresh appends NSE's files. A few inputs are not in those files and
 silently. The NSE holiday list is the main one: it sets sessions-to-expiry, and so every roll
 date shown on a ticket. This routine finds and fixes them.
 
+The same routine runs without Claude as `python scripts/panchang.py`. To load a holiday list
+from the circular's text, use `--holidays file.txt --source "NSE circular <no.>"`. Prefer that script's
+`load_holidays` to hand-editing the CSV.
+
 ## Steps
 
 1. **Check.** From the repo root:
