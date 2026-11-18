@@ -11,6 +11,33 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.3.5] — 2026-11-18 — *A progress bar that moves*
+
+An audit of the run's progress card against every member's, step by step on real runs.
+
+### Fixed
+- **The bar moves on the first run of the hour.** A run of the latest session, and every index
+  desk run, was cached by decorating the engine, and a decorated engine cannot take the progress
+  callback: the card sat on "loading the bundle · 3%" (the desk on "reading the index chains ·
+  5%") for the whole computation, then jumped to 100%. Finished runs are now kept by hand, for
+  the hour as before, so the first run reports every step and a repeat is instant. A past date is
+  kept the same way (it was recomputed on every click).
+- **Every step has the family's detail line**, under a Title Case step: "Fetching NSE Files ·
+  F&O bhavcopy · the sessions the bundle lacks", "Replaying the Book · fills, rolls, stops · one
+  lot each", "Option Chains · OI by strike · dealer gamma · IV smile". The card was the family's
+  without its third line (78px against every member's 97), the steps lower-case.
+- **The desk's steps run forward.** "Verdicts · 90%" was reported before "Market Breadth ·
+  85%"; it now follows the breadth read, where its work is.
+- **The phases name the work and never step back.** The desk's steps were unknown to the phase
+  table, so its card guessed a phase from the percentage; it now reads Data → Readings →
+  Evidence → Final Assembly. The screener's ban-list check (55%) was filed under Positioning,
+  after the book replay (45%) had already moved the card to phase 3; it is part of Book & Flow.
+  A phase no step reported ("reading option chains") is gone.
+- A table's label column is never re-read as a numeric column, whatever its values; the rule
+  now goes to every family member.
+
+---
+
 ## [7.3.4] — 2026-11-18 — *Paper first*
 
 ### Changed

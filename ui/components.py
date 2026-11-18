@@ -1031,8 +1031,9 @@ def render_data_table(
     # the primary ink. Read by dtype alone it was text — left-aligned and tertiary, so a
     # table of prices and P&L read as prose. A pre-formatted table is how an app shows
     # rupees, lakh and percent exactly, so this is the common case, not the exception.
-    text_numeric = {c for c in cols if c not in numeric_cols and c != label_col
-                    and _is_numeric_text(view[c])}
+    # The label column is never a numeric column (resolved here as it is below).
+    _lbl = label_col if label_col is not None else ("__index__" if show_index else (cols[0] if cols else None))
+    text_numeric = {c for c in cols if c not in numeric_cols and c != _lbl and _is_numeric_text(view[c])}
     numeric_cols |= text_numeric
     lower_better = (lower_is_better_cols or set()) & numeric_cols
     sign_cols = ((sign_color_cols or set()) & numeric_cols) | lower_better
@@ -1066,7 +1067,7 @@ def render_data_table(
         if c in sign_cols and c in text_numeric and text != "—":
             # A formatted number carries its sign as its first character.
             s = str(val).strip()[:1]
-            sgn = 1 if s == "+" else -1 if s in "−-" else 0
+            sgn = 1 if s == "+" else -1 if s in ("−", "-") else 0
             if c in lower_better:
                 sgn = -sgn
             color = t["emerald"] if sgn > 0 else t["rose"] if sgn < 0 else t["ink_tertiary"]

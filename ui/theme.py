@@ -606,12 +606,18 @@ def inject_css(theme: str = "dark") -> None:
 # The label is the only thing that is accurate in both cases, and every call
 # site already passes one.
 RUN_PHASES = (
-    (1, "Data",          ("fetching nse files", "loading the bundle")),
-    (2, "Positioning",   ("scoring positioning", "reading option chains")),
-    (3, "Book",          ("replaying the book", "reading option flow")),
+    # the screener
+    (1, "Data",           ("loading the bundle", "fetching nse files")),
+    (2, "Positioning",    ("scoring positioning",)),
+    (3, "Book & Flow",    ("replaying the book", "checking the f&o ban list", "reading option flow")),
     (4, "Final Assembly", ("assembling the screen", "analysis complete")),
+    # the index desk: the same four phases, named for its work
+    (1, "Data",           ("reading the index chains", "loading index history", "reading new sessions")),
+    (2, "Readings",       ("participant positions", "india vix", "option chains", "market breadth")),
+    (3, "Evidence",       ("verdicts",)),
+    (4, "Final Assembly", ("desk ready",)),
 )
-_N_PHASES = len(RUN_PHASES)
+_N_PHASES = max(n for n, _, _ in RUN_PHASES)
 
 
 def _phase_of(label: str, pct: int) -> "tuple[int, int, str]":
@@ -625,7 +631,7 @@ def _phase_of(label: str, pct: int) -> "tuple[int, int, str]":
         if key in labels:
             return n, _N_PHASES, name
     if pct >= 98:
-        return _N_PHASES, _N_PHASES, RUN_PHASES[-1][1]
+        return _N_PHASES, _N_PHASES, RUN_PHASES[_N_PHASES - 1][1]
     idx = min(int(pct) // (100 // _N_PHASES), _N_PHASES - 1)
     return RUN_PHASES[idx][0], _N_PHASES, RUN_PHASES[idx][1]
 

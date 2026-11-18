@@ -23,7 +23,7 @@ from vaaydo import curator, index_desk, signal
 import ui.desk as desk_view
 from vaaydo.universe import UNIVERSES, constituents
 
-VERSION = "7.3.4"
+VERSION = "7.3.5"
 STOCKS, INDICES = "F&O Stocks", "Indices · NIFTY & BANKNIFTY"
 st.set_page_config(page_title="VAAYDO | F&O Trade Screener", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
@@ -171,14 +171,55 @@ with st.sidebar:
     render_appearance_control()
 
 
-@st.cache_resource(show_spinner=False, ttl=3600, max_entries=6)
-def cached_run(asof_key: str, day_key: str):
-    return curator.run(None if asof_key == "latest" else date.fromisoformat(asof_key))
+@st.cache_resource(show_spinner=False)
+def _runs() -> dict:
+    """Finished runs, shared across sessions, keyed by (kind, as-of, hour)."""
+    return {}
 
 
-@st.cache_resource(show_spinner=False, ttl=3600, max_entries=4)
-def cached_desk(asof_key: str, day_key: str):
-    return index_desk.run(None if asof_key == "latest" else date.fromisoformat(asof_key))
+def cached(kind: str, asof_key: str, hour_key: str, compute, keep: int = 6):
+    """A finished run if this hour already has one, else ``compute()``, kept for the hour.
+
+    The results are cached by hand, not by decorating the engines: a decorated function
+    cannot take the progress callback (the bar sat on its first step for the whole
+    computation, then jumped to the end), and Streamlit would replay any element it drew.
+    """
+    store, k = _runs(), (kind, asof_key, hour_key)
+    if k not in store:
+        result = compute()
+        held = [x for x in store if x[0] == kind]          # oldest first: a dict keeps insertion order
+        for old in held[: max(0, len(held) - keep + 1)]:
+            store.pop(old, None)
+        store[k] = result
+    return store[k]
+
+
+#: Each engine step as the progress card shows it: the step, and what it is working on.
+#: The engines report a lower-case key; the card shows the family's step and detail line.
+_STEPS = {
+    "loading the bundle":        ("Loading the Bundle", "data/ · sessions since Jul 2024"),
+    "fetching nse files":        ("Fetching NSE Files", "F&O bhavcopy · the sessions the bundle lacks"),
+    "scoring positioning":       ("Scoring Positioning", "option positioning · every F&O stock"),
+    "replaying the book":        ("Replaying the Book", "fills, rolls, stops · one lot each"),
+    "checking the f&o ban list": ("Checking the F&O Ban List", "NSE market-wide position limit"),
+    "reading option flow":       ("Reading Option Flow", "contract flow against the session before · per-stock screen"),
+    "assembling the screen":     ("Assembling the Screen", "positions · closed trades · tonight's tickets"),
+    "analysis complete":         ("Analysis Complete", "tickets ready"),
+    "reading the index chains":  ("Reading the Index Chains", "NIFTY · BANKNIFTY"),
+    "loading index history":     ("Loading Index History", "NIFTY · BANKNIFTY · 2019 → today"),
+    "reading new sessions":      ("Reading New Sessions", "F&O bhavcopy since the bundle"),
+    "participant positions":     ("Participant Positions", "FII · DII · Pro · Client open interest"),
+    "india vix":                 ("India VIX", "NSE volatility index"),
+    "option chains":             ("Option Chains", "OI by strike · dealer gamma · IV smile"),
+    "market breadth":            ("Market Breadth", "NSE advance / decline · NIFTY regime"),
+    "verdicts":                  ("Verdicts", "registered tests · NIFTY reads · paper side"),
+    "desk ready":                ("Desk Ready", "NIFTY · BANKNIFTY"),
+}
+
+
+def step(slot, pct: int, key: str) -> None:
+    label, sub = _STEPS.get(key.lower(), (key, ""))
+    progress_bar(slot, pct, label, sub)
 
 
 @st.cache_data(show_spinner=False)
@@ -197,9 +238,11 @@ if run_clicked and kind == INDICES:
     slot = st.empty()
     key = "latest" if asof >= today else asof.isoformat()
     try:
-        progress_bar(slot, 5, "reading the index chains")
-        dk = cached_desk(key, datetime.now().strftime("%Y-%m-%d %H"))
-        progress_bar(slot, 100, "desk ready")
+        step(slot, 5, "reading the index chains")
+        dk = cached("desk", key, datetime.now().strftime("%Y-%m-%d %H"),
+                    lambda: index_desk.run(None if key == "latest" else date.fromisoformat(key),
+                                           progress=lambda p, label: step(slot, p, label)), keep=4)
+        step(slot, 100, "desk ready")
         st.session_state["desk"] = dk
         st.session_state["view"] = INDICES
         st.session_state["desk_meta"] = dict(mode=mode, start=start, asof=asof)
@@ -211,11 +254,10 @@ elif run_clicked:
     slot = st.empty()
     key = "latest" if asof >= today else asof.isoformat()
     try:
-        progress_bar(slot, 3, "loading the bundle")
-        r = cached_run(key, datetime.now().strftime("%Y-%m-%d %H")) if key == "latest" else None
-        if r is None:
-            r = curator.run(asof, progress=lambda p, label: progress_bar(slot, p, label))
-        progress_bar(slot, 100, "analysis complete")
+        step(slot, 3, "loading the bundle")
+        r = cached("run", key, datetime.now().strftime("%Y-%m-%d %H"),
+                   lambda: curator.run(None if key == "latest" else asof, progress=lambda p, label: step(slot, p, label)))
+        step(slot, 100, "analysis complete")
         st.session_state["run"] = r
         st.session_state["run_meta"] = dict(universe=universe, mode=mode, start=start, asof=asof)
         st.session_state["view"] = STOCKS
