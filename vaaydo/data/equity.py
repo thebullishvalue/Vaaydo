@@ -49,10 +49,19 @@ def parse(raw: bytes) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+def _is_for(df: pd.DataFrame, d: date) -> bool:
+    """The file's own trade date is the date asked for (holiday requests return the
+    previous session's file under the new date's name)."""
+    if df is None or df.empty or "date" not in df:
+        return False
+    return bool((pd.to_datetime(df["date"]).dt.date == d).all())
+
+
 def fetch_day(d: date, s: requests.Session | None = None) -> pd.DataFrame | None:
     p = _path(d)
     if p.exists():
-        return pd.read_parquet(p)
+        df = pd.read_parquet(p)
+        return df if _is_for(df, d) else None
     if d.weekday() >= 5:
         return None
     s = s or requests.Session()
@@ -66,6 +75,8 @@ def fetch_day(d: date, s: requests.Session | None = None) -> pd.DataFrame | None
             return None
         if r.status_code == 200 and len(r.content) > 1000:
             df = parse(r.content)
+            if not _is_for(df, d):          # on a holiday NSE serves the previous session's file
+                return None
             df.to_parquet(p, index=False)
             return df
         time.sleep(2 ** attempt)

@@ -18,6 +18,9 @@ A position is a chain of LEGS, one per futures contract it was held in:
               trailing levels by the exchange's adjustment factor, so P&L is continuous
     no next contract    when the roll is due and NSE has listed no later contract (the stock is
               leaving F&O), the position is closed at that close, as a roll would be
+    F&O ban             no fresh position: no entry, and no roll (a roll opens the next contract).
+              The current contract is held and rolled on the first unbanned session; if the
+              ban lasts to expiry the contract settles and the position closes
     terminated contract if the held contract stops printing before its expiry (merger, rename),
               the position is closed at its last exchange close
 
@@ -192,6 +195,15 @@ def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None,
                 terminated[s] = True
                 del held[s]
                 continue
+            if nxt_contract is not None and nxt_contract != leg.contract and fno_ban and (d, s) in fno_ban:
+                # a roll opens the next contract: not allowed during an F&O ban. Hold the current
+                # one; roll on the first unbanned session, or settle at expiry if the ban outlasts it
+                if d >= leg.contract and np.isfinite(c):
+                    leg.exit_date, leg.exit_px, leg.exit_why = d, c, "expired in F&O ban"
+                    led.closed.append((p, "expired during an F&O ban (no roll allowed): settled", d))
+                    terminated[s] = True
+                    del held[s]
+                continue
             if nxt_contract is not None and nxt_contract != leg.contract:   # roll at today's close
                 c_old, c_new = M.px(d, s, leg.contract), M.px(d, s, nxt_contract)
                 if np.isfinite(c_old) and np.isfinite(c_new):
@@ -219,21 +231,24 @@ def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None,
         if cap is None:
             add = cand
         else:
+            # a position's rupee size on THIS day: price x lot of the contract it trades in
+            nv = (lambda s, d=d: notional(d, s)) if callable(notional) else (lambda s: notional.get(s, np.nan))
+            size = {s: nv(s) for s in set(keep) | set(cand)}
             e_ = (ext or {}).get(d, {})
-            used = sum(notional.get(s, np.inf) for s in keep)
-            nl = sum(notional.get(s, 0) for s, p in keep.items() if p.side > 0)
-            ns = sum(notional.get(s, 0) for s, p in keep.items() if p.side < 0)
-            L = sorted([s for s in cand if m[s] > 0 and s in notional], key=lambda s: -e_.get(s, 0))
-            S = sorted([s for s in cand if m[s] < 0 and s in notional], key=lambda s: -e_.get(s, 0))
+            used = sum(size[s] if np.isfinite(size[s]) else 0.0 for s in keep)
+            nl = sum(size[s] for s, p in keep.items() if p.side > 0 and np.isfinite(size[s]))
+            ns = sum(size[s] for s, p in keep.items() if p.side < 0 and np.isfinite(size[s]))
+            L = sorted([s for s in cand if m[s] > 0 and np.isfinite(size[s])], key=lambda s: -e_.get(s, 0))
+            S = sorted([s for s in cand if m[s] < 0 and np.isfinite(size[s])], key=lambda s: -e_.get(s, 0))
             add = []
             while L or S:
                 pick_long = bool((nl <= ns and L) or not S)
                 s = L.pop(0) if pick_long else S.pop(0)
-                if used + notional[s] > cap:
+                if used + size[s] > cap:
                     continue
                 add.append(s)
-                used += notional[s]
-                nl, ns = (nl + notional[s], ns) if pick_long else (nl, ns + notional[s])
+                used += size[s]
+                nl, ns = (nl + size[s], ns) if pick_long else (nl, ns + size[s])
         # exits fill at the next open: record them now with the leg still open
         for s, why in exits.items():
             p = held[s]
@@ -245,6 +260,9 @@ def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None,
         for s in add:
             r = ratios.get((s, m[s]))
             rv = r.get(d, np.nan) if r is not None else np.nan
+            if not np.isfinite(rv):          # no Pragyam level for this stock: the day's median distance
+                r = ratios.get(("*", m[s]))
+                rv = r.get(d, np.nan) if r is not None else np.nan
             k = 1 + mult * (rv - 1) if np.isfinite(rv) else None
             new_held[s] = Position(s, m[s], d, k)
             decisions[s] = ("ENTER", "")

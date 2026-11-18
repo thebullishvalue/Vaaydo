@@ -4,9 +4,12 @@ import numpy as np, pandas as pd
 from vaaydo import curator, ledger as LG, book as B, bundle
 r = curator.run()
 F = pd.read_parquet(bundle.FUT); F['date'] = pd.to_datetime(F.date)
+from vaaydo import renames as RN
+ren = RN.detect(F); F = RN.apply(F, ren, keys=('date', 'expiry'))
 P = B.Prices(F)
-PR = pd.read_parquet(bundle.PRG); PR['date'] = pd.to_datetime(PR.date)
-st = PR.rename(columns={'stopL_r': 'stopL', 'stopS_r': 'stopS'})[['date', 'symbol', 'stopL', 'stopS']]
+PR = RN.apply(pd.read_parquet(bundle.PRG), ren); PR['date'] = pd.to_datetime(PR.date)
+st = PR.rename(columns={'stopL_r': 'stopL', 'stopS_r': 'stopS'})[['date', 'symbol', 'stopL', 'stopS']].sort_values(['symbol', 'date'])
+st[['stopL', 'stopS']] = st.groupby('symbol')[['stopL', 'stopS']].ffill(limit=5)
 sc = r.scores[['date', 'symbol', 'score']]
 R = B.simulate(sc, P, enter=0.05, stay=0.15, stops=st, stop_mult=1.5, trail=True, ban_after_stop=True,
                start=r.dates[0], fno_ban=r.ban)

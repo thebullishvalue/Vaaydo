@@ -21,7 +21,7 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 
-from . import banlist, bundle, ledger as LG, session, signal
+from . import banlist, bundle, ledger as LG, renames as RN, session, signal
 from .data import bhavcopy
 from .simulate import futures_cost
 
@@ -45,6 +45,7 @@ class Run:
     notes: list = field(default_factory=list)
     ban: frozenset = frozenset()
     ban_next: tuple = (None, None)
+    renames: dict = field(default_factory=dict)   # new symbol -> (old symbol, last session under the old name)
 
 
 def _sessions_up_to(asof: date | None) -> list[date]:
@@ -100,25 +101,31 @@ def run(asof: date | None = None, progress=None) -> Run:
     if not days:
         raise RuntimeError("No NSE F&O file found for that date or the 30 days before it.")
     A = pd.Timestamp(days[-1])
+    F = _bundle_futures(A)
+    ren = RN.detect(F)                      # symbol renames: one continuous identity everywhere
+    ren_last = {new: (old, pd.Timestamp(F.loc[F["symbol"] == old, "date"].max())) for old, new in ren.items()}
+    F = RN.apply(F, ren, keys=("date", "expiry"))
     say(25, "scoring positioning")
-    sc = signal.scores(signal.extend_inputs(days))
+    sc = signal.scores(RN.apply(signal.extend_inputs(days), ren))
     sc = sc[sc["date"] <= A]
     daily: dict = {}
     signal.replay(sc, daily=daily)
     say(45, "replaying the book")
-    F = _bundle_futures(A)
     M = LG.Market(F)
     cal = set(M.cal)
     dates = [d for d in sorted(daily) if d in cal]
     names = sorted(set(sc["symbol"]))
-    P = _bundle_pragyam(names, A)
+    P = RN.apply(_bundle_pragyam(names, A), ren)
     ratios = {}
+    med = P.groupby("date")[["stopL_r", "stopS_r"]].median()
+    ratios[("*", 1)], ratios[("*", -1)] = med["stopL_r"], med["stopS_r"]   # fallback: the day's median distance
     for s, g in P.groupby("symbol"):
         g = g.set_index("date")
-        ratios[(s, 1)], ratios[(s, -1)] = g["stopL_r"], g["stopS_r"]
+        # a missing day's level falls back to the last one within 5 sessions (never a position without a stop)
+        ratios[(s, 1)], ratios[(s, -1)] = g["stopL_r"].ffill(limit=5), g["stopS_r"].ffill(limit=5)
     say(55, "checking the F&O ban list")
     try:
-        ban = banlist.live(dates)
+        ban = frozenset((d, ren.get(x, x)) for d, x in banlist.live(dates))
         nb_date, nb = banlist.next_session(A) if asof is None or pd.Timestamp(asof) >= A else (None, None)
     except Exception:
         ban, nb_date, nb = banlist.banned(), None, None
@@ -140,7 +147,7 @@ def run(asof: date | None = None, progress=None) -> Run:
     feats = day_features(A.date()).set_index("symbol")
     try:
         prev_day = [d for d in bhavcopy.available_days() if d < A.date()][-1]
-        cf = FS.contract_flow(FS._load(A.date(), False), FS._load(prev_day, False))
+        cf = FS.contract_flow(*[RN.apply(FS._load(x, False), ren, keys=()) for x in (A.date(), prev_day)])
         uf = FS.underlying_flow(cf).set_index("symbol")
     except Exception as e:
         cf, uf = pd.DataFrame(), pd.DataFrame()
@@ -219,7 +226,7 @@ def run(asof: date | None = None, progress=None) -> Run:
                            exit_contract=p.legs[-1].contract.date(), legs=len(p.legs), why=why,
                            sessions=int(((M.cal >= p.legs[0].entry_date) & (M.cal <= p.legs[-1].exit_date)).sum()),
                            ret=_trade_return(p, cost)))
-    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ext, ratios, dates, notes, ban, (nb_date, nb))
+    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ext, ratios, dates, notes, ban, (nb_date, nb), ren_last)
 
 
 def _roll_plan(M, A, s, contract) -> tuple:
@@ -316,13 +323,17 @@ def sized(r: Run, capital: float, leverage: float = 1.0, universe: frozenset | N
     only limits which of those names you trade."""
     A = r.asof
     daily = r.daily if universe is None else {d: {s: v for s, v in m.items() if s in universe} for d, m in r.daily.items()}
-    notional = {}
-    for s in set(r.screen["symbol"]):
-        e = r.market.active.get((A, s))
-        if e is not None:
-            c, lot = r.market.px(A, s, e), r.market.lot.get((A, s, e), 0)
-            if np.isfinite(c) and lot:
-                notional[s] = c * lot
+    M = r.market
+
+    def notional(d, s):
+        """Rupee size on day d: close x lot of the contract an order decided that day fills in
+        (held names: their current contract)."""
+        e = M.fill_contract.get((d, s)) or M.active.get((d, s))
+        if e is None:
+            return np.nan
+        c, lot = M.px(d, s, e), M.lot.get((d, s, e), 0)
+        return c * lot if np.isfinite(c) and lot else np.nan
+
     led = LG.replay(r.market, r.dates, daily, r.ratios, ext=r.ext, notional=notional, cap=capital * leverage,
                     fno_ban=getattr(r, "ban", None))
     return _positions(r.market, led, A, r.screen)

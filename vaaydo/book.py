@@ -108,9 +108,10 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
     scores["date"] = pd.to_datetime(scores["date"])
     scores["pct"] = scores.groupby("date")["score"].rank(pct=True)
     by_day = {d: g.set_index("symbol")["pct"] for d, g in scores.groupby("date")}
-    stp = None
+    stp = stpm = None
     if stops is not None:
         stp = stops.set_index(["date", "symbol"])[["stopL", "stopS"]]
+        stpm = stops.groupby("date")[["stopL", "stopS"]].median()      # fallback: the day's median distance
     cal = [d for d in P.cal if (start is None or d >= pd.Timestamp(start)) and (end is None or d <= pd.Timestamp(end))]
     book = {}       # symbol -> dict(side, expiry, ref, stop)
     banned = {}     # stopped-out names: no re-entry on that side until the signal leaves the band
@@ -184,6 +185,12 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                         continue
                     r = held["side"] * (c_now / c_prev_adj - 1)
                     act = P.active.get((nxt, s))
+                    if act is not None and act != e and fno_ban and (nxt, s) in fno_ban:
+                        if nxt >= e:                            # ban through expiry: settles, position closes
+                            pnl[held["side"]].append(r - half)
+                            trades += 1
+                            continue
+                        act = None                              # hold the current contract, roll later
                     if act is not None and act != e:           # roll at the close
                         r -= cost
                         trades += 1
@@ -211,9 +218,11 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                 if not (np.isfinite(o) and np.isfinite(c_now)):
                     continue
                 stop, k = None, None
-                if stp is not None and stop_mult and (d, s) in stp.index:
-                    sl, ss = stp.loc[(d, s)]
+                if stp is not None and stop_mult:
+                    sl, ss = stp.loc[(d, s)] if (d, s) in stp.index else (np.nan, np.nan)
                     base = sl if w > 0 else ss
+                    if not np.isfinite(base) and d in stpm.index:
+                        base = stpm.loc[d, "stopL" if w > 0 else "stopS"]
                     if np.isfinite(base):
                         k = 1 + stop_mult * (base - 1)
                         stop = o * k

@@ -60,7 +60,8 @@ def _index_card(P, sym, dk):
     em = r.get("straddle", np.nan)
     rows = [
         ("Spot", f"{_num(r['spot'], 2)}  ({_pct(chg, 2)})"),
-        ("Near future", f"{_num(r['fut_close'], 2)} · {pd.Timestamp(r['fut_expiry']):%d %b} · basis {_pct(r.get('basis'), 2)} p.a."),
+        ("Near future", f"{_num(r['fut_close'], 2)} · {pd.Timestamp(r['fut_expiry']):%d %b} · carry over risk-free "
+                        + (f"{_pct(r.get('basis'), 2)} p.a." if r.get("fut_dte", 0) >= 5 else "— (too near expiry to annualise)")),
         ("Rollover", f"{_pct(r.get('rollover'), 0, False)} of futures OI in later months · {int(r.get('fut_dte', 0))} days to expiry"),
         ("ATM IV", f"{_pct(r.get('iv_front'), 1, False)} front ({int(r.get('front_dte', 0) or 0)}d) · {_pct(r.get('iv_30'), 1, False)} 30-day"),
         ("Priced move", f"±{_pct(em, 2, False)} (±{_num(em * r['spot'], 0)} pts) to {pd.Timestamp(r['front_expiry']):%d %b}"
@@ -69,7 +70,7 @@ def _index_card(P, sym, dk):
         ("Max pain", f"{_num(r.get('max_pain'))}  ({_pct(r.get('max_pain_d'), 2)})"),
         ("Call wall / put wall", f"{_num(r.get('wall_call'))} / {_num(r.get('wall_put'))}"),
         ("Gamma flip", f"{_num(r.get('flip'))}  ({_pct(r.get('flip_d'), 2)} from spot)"),
-        ("Skew (3% put − call IV)", _pct(r.get("skew"), 1)),
+        ("Skew (IV 3% below − 3% above)", f"{r.get('skew', np.nan) * 100:+.1f} vol pts" if np.isfinite(r.get("skew", np.nan)) else "—"),
     ]
     with ui.panel(f"desk-{sym}", sym, context=f"{pd.Timestamp(r['date']):%d %b %Y}", chip=(reg, tone)):
         st.markdown('<div class="panel-specs">' + "".join(
@@ -320,13 +321,10 @@ def _evidence(dk):
         n["accept"] = np.where(n["accept"], "passes", "—")
         ui.render_data_table(n.rename(columns={"read": "Read", "accept": "Statistical pass", "yrs+": "Years +"}),
                              show_index=False, label_col="Read")
-        ui.render_data_table(pd.DataFrame([
-            {"Trade (h = 5 tranches)": "Always long", "Disc": 0.59, "Val": 1.15, "Final": -0.25, "All": 0.45, "Break-even": "—"},
-            {"Trade (h = 5 tranches)": "A2 breadth > median", "Disc": 1.19, "Val": 0.38, "Final": -0.46, "All": 0.67, "Break-even": "38 bp"},
-            {"Trade (h = 5 tranches)": "N2 composite", "Disc": 0.65, "Val": 0.25, "Final": 0.71, "All": 0.60, "Break-even": "48 bp"},
-            {"Trade (h = 5 tranches)": "N3 precedent", "Disc": 0.33, "Val": -0.77, "Final": 1.23, "All": 0.49, "Break-even": "18 bp"},
-            {"Trade (h = 5 tranches)": "N4 agreement", "Disc": 1.20, "Val": -0.23, "Final": 0.19, "All": 0.77, "Break-even": "41 bp"},
-        ]), show_index=False, label_col="Trade (h = 5 tranches)")
+        TR = getattr(dk, "ntrades", None)
+        if TR is not None and len(TR):
+            ui.render_data_table(TR.rename(columns={"Disc": "2019–22", "Vali": "2023–24H1", "Fina": "2024H2–26", "All": "2019–26"}),
+                                 show_index=False, label_col="Trade (h = 5 tranches)")
         st.markdown('<div class="panel-copy">Net Sharpe on NIFTY futures. Every combination loses to plain long in 2023–24. '
                     'They all contain the FII options stance, so they are not independent confirmations. Single readings '
                     'sit far below the detectable IC (0.13 at 5 sessions): unproven, not disproven.</div>', unsafe_allow_html=True)
@@ -484,7 +482,7 @@ def render(dk, meta: dict):
             h = P[P["symbol"] == sym].sort_values("date")
             r = h.iloc[-1]
             for nm, col, f in (("Put/call OI", "pcr_oi", lambda v: f"{v:.2f}"), ("30-day IV", "iv_30", lambda v: _pct(v, 1, False)),
-                               ("Skew", "skew", lambda v: _pct(v, 1)), ("Dealer gamma", "gex_dealer", lambda v: f"{v:+.3f}"),
+                               ("Skew (vol pts)", "skew", lambda v: f"{v * 100:+.1f}"), ("Dealer gamma", "gex_dealer", lambda v: f"{v:+.3f}"),
                                ("Rollover", "rollover", lambda v: _pct(v, 0, False)), ("Term (front / 30d)", "term", lambda v: f"{v:.2f}")):
                 v = r.get(col, np.nan)
                 rows.append({"Index": sym, "Reading": nm, "Now": f(v) if np.isfinite(v) else "—",

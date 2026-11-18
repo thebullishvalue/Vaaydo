@@ -30,6 +30,7 @@ VIX_B = ROOT / "vix.parquet"
 BREADTH_B = ROOT / "breadth_nse.parquet"   # NSE A/D (2006 on) and NIFTY close/PE/PB/DY (2013 on)
 WB_TESTS_B = ROOT / "workbook_tests.parquet"
 NROUND_B = ROOT / "nifty_combined_tests.parquet"
+NTRADES_B = ROOT / "nifty_combined_trades.parquet"
 IFUT_B = ROOT / "index_futures.parquet"
 
 
@@ -73,6 +74,7 @@ class Desk:
     wb_tests: pd.DataFrame = field(default_factory=pd.DataFrame)
     reads: dict = field(default_factory=dict)                     # combined NIFTY candidates, paper
     ntests: pd.DataFrame = field(default_factory=pd.DataFrame)
+    ntrades: pd.DataFrame = field(default_factory=pd.DataFrame)
     notes: list = field(default_factory=list)
 
 
@@ -261,4 +263,4 @@ def run(asof: date | None = None, progress=None) -> Desk:
         notes.append(f"Combined NIFTY reads unavailable: {str(e)[:80]}")
     return Desk(asof=A, panel=P, participants=pf, part_raw=part_raw, vix=vix, views=views,
                 paper=paper_state(P, pf), tests=tests, cycles=cycles, breadth=B, wb_tests=wb, reads=reads,
-                ntests=nt, notes=notes)
+                ntests=nt, ntrades=pd.read_parquet(NTRADES_B) if NTRADES_B.exists() else pd.DataFrame(), notes=notes)

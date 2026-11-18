@@ -17,6 +17,9 @@ for A in test:
     b = {s: (p_side, legs) for s, p_side, legs in [(x, None, None) for x in []]}
     led_a = LG.replay(r.market, r.dates, r.daily, r.ratios, fno_ban=r.ban)
     b = {s: (p.side, [(l.contract, l.entry_date, round(l.entry_px, 4)) for l in p.legs]) for s, p in led_a.held.items() if not p.pending}
+    # a past run shows the name of its day; the full replay today's: compare one identity
+    canon = {old: new for new, (old, _) in full.renames.items()}
+    b = {canon.get(s, s): v for s, v in b.items()}
     diff = {s for s in set(a) | set(b) if a.get(s) != b.get(s)}
     pa = r.positions
     ok_contract = all(pd.Timestamp(c) > A for c in pa.loc[pa.action != 'EXIT', 'contract'] if c is not None)

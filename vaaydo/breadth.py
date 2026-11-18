@@ -204,6 +204,9 @@ def nse_ad_day(d, session) -> tuple[int, int] | None:
             return None
         z = zipfile.ZipFile(io.BytesIO(r.content))
         x = pd.read_csv(z.open(z.namelist()[0]))
+        if "TIMESTAMP" in x and not (pd.to_datetime(x["TIMESTAMP"].astype(str).str.strip(), format="%d-%b-%Y",
+                                                    errors="coerce").dt.date == t.date()).all():
+            return None                     # a holiday request answered with another session's file
         x = x[x["SERIES"].astype(str).str.strip() == "EQ"]
         ch = x["CLOSE"] - x["PREVCLOSE"]
     return int((ch > 0).sum()), int((ch < 0).sum())

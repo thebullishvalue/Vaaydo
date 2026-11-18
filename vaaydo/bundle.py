@@ -25,6 +25,7 @@ FUT = ROOT / "futures.parquet"
 PRG = ROOT / "pragyam.parquet"
 SECT = ROOT / "sectors.parquet"
 INPUTS = ROOT / "opi_inputs.parquet"
+PRAGYAM_ANCHOR = START - pd.Timedelta(days=1700)      # 11 Nov 2019: the warm-up start of the shipped levels
 
 
 def futures_rows(days) -> pd.DataFrame:
@@ -46,13 +47,16 @@ def pragyam_rows(symbols, since: pd.Timestamp, until: pd.Timestamp | None = None
     """Pragyam's daily levels, as ratios to the close, for dates in [since, until]."""
     from . import pragyam as PG
     from .data import history
-    h = history_df if history_df is not None else history.load(sorted(symbols))
+    h = history_df if history_df is not None else history.load(sorted(symbols), until=until)
     out = []
     for s, d in h[h["symbol"].isin(symbols)].groupby("symbol"):
         d = d.set_index("date").sort_index()[["open", "high", "low", "close"]]
         if until is not None:
             d = d[d.index <= until]
-        d = d[d.index >= since - pd.Timedelta(days=1700)]           # enough warm-up (~1,150 bars)
+        # Pragyam calibrates adaptively, so its output depends on where the run starts: start every
+        # run at one fixed date (the bundle's own warm-up start) so a session's level is the same
+        # whether it was computed in the original build, a nightly refresh or a live run
+        d = d[d.index >= PRAGYAM_ANCHOR]
         if len(d) < 300:
             continue
         R = PG.run(d)
@@ -118,10 +122,17 @@ def refresh(progress=print) -> None:
     pd.concat([F, futures_rows(new_days)], ignore_index=True).drop_duplicates(["date", "symbol", "expiry"], keep="last") \
         .to_parquet(FUT, index=False, compression="zstd")
     P = pd.read_parquet(PRG)
-    syms = sorted(set(P["symbol"]) | set(pd.read_parquet(FUT)["symbol"]))
+    Fb = pd.read_parquet(FUT, columns=["date", "symbol"])
+    Fb["date"] = pd.to_datetime(Fb["date"])
+    recent = sorted(Fb["date"].unique())[-60:]
+    syms = sorted(set(Fb.loc[Fb["date"].isin(recent), "symbol"]))   # stocks in F&O now (not ones that left)
     from .data import history
-    h = history.load(syms, refresh=True)
+    h = history.load(syms, refresh=True, until=new_days[-1])         # lagging Yahoo bars filled from NSE
     newp = pragyam_rows(syms, pd.Timestamp(new_days[0]), history_df=h)
+    have = set(newp.loc[pd.to_datetime(newp["date"]) == pd.Timestamp(new_days[-1]), "symbol"]) if len(newp) else set()
+    lost = sorted(set(syms) - have)
+    if lost:
+        progress(f"WARNING: no Pragyam level on {new_days[-1]} for {len(lost)} stocks: {', '.join(lost[:20])}")
     pd.concat([P, newp], ignore_index=True).drop_duplicates(["date", "symbol"], keep="last") \
         .to_parquet(PRG, index=False, compression="zstd")
     progress(f"bundle now ends {new_days[-1]}")
@@ -138,6 +149,16 @@ def refresh_index(new_days, progress=print) -> None:
         if rows:
             pd.concat([P, pd.DataFrame(rows)], ignore_index=True).drop_duplicates(["date", "symbol"], keep="last") \
                 .to_parquet(p, index=False, compression="zstd")
+    fx = ROOT / "index_futures.parquet"
+    if fx.exists():
+        X = pd.read_parquet(fx)
+        add = [I._fut_day(d) for d in new_days]
+        add = [a for a in add if len(a)]
+        if add:
+            X = pd.concat([X, *add], ignore_index=True)
+            X["date"] = pd.to_datetime(X["date"])
+            X["lot"] = X["lot"].where(X["lot"] > 0)
+            X.drop_duplicates(["date", "symbol", "expiry"], keep="last").to_parquet(fx, index=False)
     q = ROOT / "participant_oi.parquet"
     if q.exists():
         Q = pd.read_parquet(q)

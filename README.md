@@ -45,10 +45,10 @@ names that fit, long and short balanced.
 
 | Book (1× gross, net of costs, 2019 – Nov 2026) | Sharpe | Return / yr | Volatility | Worst drawdown |
 |---|---|---|---|---|
-| model book, ~30 names | 0.80 | 5.9% | 7.4% | −13.4% |
-| 20 names | 0.74 | 6.2% | 8.4% | −13.0% |
-| 12 names | 0.70 | 7.3% | 10.4% | −16.0% |
-| 6 names | 0.24 | 3.5% | 14.6% | −26.6% |
+| model book, ~30 names | 0.76 | 5.5% | 7.3% | −17.4% |
+| 20 names | 0.69 | 5.7% | 8.3% | −15.8% |
+| 12 names | 0.80 | 8.4% | 10.6% | −16.0% |
+| 6 names | 0.36 | 5.4% | 14.7% | −21.0% |
 
 A modest, market-neutral edge. Below ~12 names it is mostly stock-specific noise.
 Designed on 2024–25 and confirmed on 2019–22, which no design choice had seen. Flat in
@@ -70,7 +70,9 @@ Designed on 2024–25 and confirmed on 2019–22, which no design choice had see
 * The backtest simulator and the live ledger hold identical books (checked at 97 dates),
   and every leg ever booked is checked against the exchange files (docs/AUDIT.md).
 * A stock leaving F&O (no next contract listed) is closed at its due roll; a contract that
-  stops printing early (merger, rename) at its last print. Rolls count NSE sessions,
+  stops printing early (merger) at its last print. A renamed stock (ZOMATO → ETERNAL and 16
+  others since 2019) is one continuous position and signal. No entry and no roll during an
+  F&O ban. Rolls count NSE sessions,
   holidays included, and are announced on the ticket before they happen.
 
 ## Run it

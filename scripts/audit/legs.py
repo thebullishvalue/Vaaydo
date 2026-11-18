@@ -63,6 +63,14 @@ for p, st in positions:
             left = pos.get(l.contract, len(cal) + 99) - pos[l.exit_date] if l.contract in pos else None
             if left is not None and left > 3:
                 bad('rolled early', p, i, f'{left} sessions left')
+for p, st in positions:
+    for i, l in enumerate(p.legs):
+        if i > 0 and (l.entry_date, p.symbol) in r.ban:
+            bad('roll opened a contract during an F&O ban', p, i, str(l.entry_date.date()))
+        if i == 0 and (l.entry_date, p.symbol) in r.ban:
+            bad('entry during an F&O ban', p, i, str(l.entry_date.date()))
+    if p.k is None:
+        bad('position without a stop', p, 0, '')
 print(f'positions {len(positions)}  legs {nlegs}  issues {len(issues)}')
 if issues:
     I = pd.DataFrame(issues); print(I.kind.value_counts().to_string()); print(I.head(15).to_string())

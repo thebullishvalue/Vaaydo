@@ -109,3 +109,50 @@ later data is read). The backtest simulator and the live ledger were compared da
 identical to the full replay with no later data read; 97/97 checkpoints identical between engines.
 Track record regenerated: model book Sharpe 0.80 (was 0.74), 20 names 0.74, 12 names 0.70,
 6 names 0.24.
+
+## System audit, 18 Nov 2026 (every layer)
+
+**Data.** (1) NSE answers a request for a holiday's equity file with the previous session's
+file under the new date: 22 such copies sat in the equity store (doubling those days in delivery
+features) and 23 fake sessions in the breadth history. Both fetchers now reject a file whose own
+trade date is not the date asked for; the copies were removed. (2) 30 Mar 2021 is a real session
+missing from NSE's own F&O archive (404): recorded as a known one-session gap, and removed from
+the derived holiday list where it had been counted as a holiday. (3) Symbol renames (17 since
+2019: ZOMATO → ETERNAL, MCDOWELL-N → UNITDSPR, SRTRANSFIN → SHRIRAMFIN, LTIM → LTM, …) are
+detected from the futures file (same expiries, same lot, continuous price on consecutive
+sessions) and mapped to one identity in every layer, live and in the backtest: positions are no
+longer cut at the rename and the signal no longer restarts; past legs show the name they traded
+under. (4) Pragyam's levels depended on where the computation started (median 0.34% of price in
+stop distance, up to 3.7%): every run now starts at one fixed date, so a session's level is the
+same however it was computed. (5) A regression had dropped the fill of Yahoo's late bars from
+NSE's equity file: restored in the history loader, so no stock loses its level for a day.
+Checked and clean: no duplicate rows in any shipped file; every F&O session has inputs, futures
+and levels; no inverted stop ratios; no thin sessions; Yahoo-adjusted and NSE prices join without
+jumps.
+
+**Execution rules.** (6) Rolls during an F&O ban (7 cases): a roll opens the next contract, which
+the ban forbids; the contract is now held and rolled on the first unbanned session, or settles at
+expiry if the ban outlasts it. (7) Positions without a stop (5): a missing Pragyam level now falls
+back to the last level within 5 sessions, else the day's median stop distance. (8) Capital-limited
+sizing valued every past decision at today's contract size; it now uses each day's own price and
+lot in the contract the order fills in.
+
+**Presentation.** (9) Skew and call skew were shown with a % sign; they are differences of implied
+volatilities and are now shown in vol points. (10) Index desk "basis" was the carry over the
+risk-free rate; it is labelled so, and blanked inside 5 days of expiry. (11) Counts said "in the
+book" while including tomorrow's unfilled entries; every count now says "after next open". (12)
+The NIFTY trade evidence was typed into the page and had gone stale after a correction; it is now
+read from the file the research script writes. (13) Margin is labelled as a rough guide.
+
+**Operations.** (14) The nightly refresh never updated the index futures history the precedent
+read draws its outcomes from: added. A replay of the refresh (drop the last session from a copy of
+every shipped file, refresh, compare) now rebuilds all eight files exactly; the refresh warns by
+name if any stock lacks a level. (15) The app cached "latest" for 6 hours, so a run before NSE's
+evening file kept serving the previous session: the cache now turns over hourly.
+
+**After the fixes.** 0 leg issues (2,198 legs, now also checking: no entry or roll during a ban,
+no position without a stop); past runs identical to the full replay; simulator and ledger
+identical at 97 checkpoints; the nightly refresh reproduces every shipped file. Track record
+regenerated: model book Sharpe 0.76 (was 0.80) with a deeper worst drawdown, −17.4% (was −13.4%);
+20 names 0.69; 12 names 0.80; 6 names 0.36. NIFTY verdicts unchanged on the cleaned data.
+Reproduce: scripts/audit/{data,legs,asof,equiv,refresh}.py.

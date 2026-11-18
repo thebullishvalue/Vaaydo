@@ -129,3 +129,23 @@ def test_simulator_closes_like_the_ledger_when_no_next_contract():
     R = B.simulate(sc, P, enter=0.05, stay=0.15)
     names = R["names"].tolist()
     assert names[-1] == "" and any(n for n in names[:-1])     # held, then closed at the due roll
+
+
+def test_no_roll_during_an_fno_ban_then_roll_when_it_lifts():
+    near, far = "2026-01-09", "2026-02-26"
+    M, days = _market({near: [100, 100, 101, 102, 103, 104, 105], far: [101, 101, 102, 103, 104, 105, 106]},
+                      start="2026-01-01")
+    due = [d for d in days if M.active.get((d, "X")) == pd.Timestamp(far)][0]
+    led = LG.replay(M, days, {d: {"X": 1} for d in days}, _ratios(days), fno_ban=frozenset({(due, "X")}))
+    p = led.held["X"]
+    assert p.legs[0].exit_date > due and p.legs[1].entry_date == p.legs[0].exit_date
+
+
+def test_ban_through_expiry_settles_the_position():
+    near, far = "2026-01-09", "2026-02-26"
+    M, days = _market({near: [100, 100, 101, 102, 103, 104, 105], far: [101, 101, 102, 103, 104, 105, 106]},
+                      start="2026-01-01")
+    ban = frozenset((d, "X") for d in days if M.active.get((d, "X")) == pd.Timestamp(far))
+    led = LG.replay(M, days, {d: {"X": 1} for d in days}, _ratios(days), fno_ban=ban)
+    p = [p for p, why, d in led.closed if p.symbol == "X"][0]
+    assert p.legs[-1].exit_why == "expired in F&O ban" and p.legs[-1].exit_date == pd.Timestamp(near)

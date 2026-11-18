@@ -71,10 +71,47 @@ def load(symbols: list[str] | None = None, refresh: bool = False, until=None) ->
         elif missing:
             h = pd.concat([h, download(missing)], ignore_index=True)
         else:
-            return h
+            return fill_from_nse(h, symbols, until)
     else:
         h = download(symbols or [])
     h["date"] = pd.to_datetime(h["date"]).dt.tz_localize(None).dt.normalize()
     h = h.drop_duplicates(["symbol", "date"], keep="last").sort_values(["symbol", "date"])
     h.to_parquet(p, index=False)
-    return h
+    return fill_from_nse(h, symbols, until)
+
+
+def fill_from_nse(h: pd.DataFrame, symbols=None, until=None, max_sessions: int = 5) -> pd.DataFrame:
+    """Yahoo posts a session's bar hours after NSE, and sometimes skips one. For each wanted
+    symbol whose history stops before `until`, append the missing sessions (up to 5) from NSE's
+    own equity bhavcopy. Recent Yahoo bars are unadjusted relative to NSE's (adjustments apply to
+    older history), so NSE's raw OHLC joins the series without a jump."""
+    if until is None or h is None or h.empty:
+        return h
+    from datetime import timedelta
+    from . import equity
+    until = pd.Timestamp(until)
+    want = set(symbols) if symbols else set(h["symbol"])
+    last = h.groupby("symbol")["date"].max()
+    behind = {s: d for s, d in last.items() if s in want and d < until}
+    if not behind:
+        return h
+    start = min(behind.values())
+    days, d = [], start + timedelta(days=1)
+    while d <= until:
+        if d.weekday() < 5:
+            days.append(d)
+        d += timedelta(days=1)
+    rows = []
+    for d in days[-max_sessions * 2:]:
+        e = equity.fetch_day(d.date())
+        if e is None or e.empty:
+            continue
+        e = e[e["symbol"].isin(behind) & (e["close"] > 0)]
+        e = e[[pd.Timestamp(d) > behind[s] for s in e["symbol"]]]
+        if len(e):
+            rows.append(pd.DataFrame({"date": pd.Timestamp(d), "symbol": e["symbol"], "open": e["open"], "high": e["high"],
+                                      "low": e["low"], "close": e["close"], "adj": e["close"], "volume": e["qty"]}))
+    if not rows:
+        return h
+    out = pd.concat([h, *rows], ignore_index=True)
+    return out.drop_duplicates(["symbol", "date"], keep="first").sort_values(["symbol", "date"]).reset_index(drop=True)
