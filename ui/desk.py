@@ -384,6 +384,60 @@ def _breadth(dk, start):
                 'files (equity bhavcopy and index closes).</div>', unsafe_allow_html=True)
 
 
+@st.fragment
+def _oi_tab(dk, P):
+    sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_oi")
+    v = dk.views.get(sym)
+    if not v:
+        ui.render_empty_state("No chain", "The option chain for this session could not be read.", eyebrow="Gamma & OI")
+    else:
+        r = _last(P, sym)
+        ui.render_kpi_strip([
+            dict(label="Spot", value=_num(v["spot"], 2), subtext=f"nearest expiry {pd.Timestamp(v['expiry']):%d %b}"),
+            dict(label="Max pain", value=_num(r.get("max_pain")), subtext=_pct(r.get("max_pain_d"), 2) + " from forward"),
+            dict(label="Call wall", value=_num(r.get("wall_call")), subtext="largest call OI above"),
+            dict(label="Put wall", value=_num(r.get("wall_put")), subtext="largest put OI below"),
+            dict(label="Gamma flip", value=_num(r.get("flip")), subtext=_regime(r)[0],
+                 color_class="success" if r.get("gex_dealer", 0) > 0 else "danger"),
+        ], key=f"oi-kpi-{sym}")
+        _oi_chart(v, sym, r)
+        _gex_chart(v, sym, r)
+
+
+@st.fragment
+def _vol_tab(dk, P, start):
+    sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_vol")
+    h = P[P["symbol"] == sym].sort_values("date")
+    r = h.iloc[-1]
+    rv = np.log(h["spot"]).diff().rolling(20).std().iloc[-1] * np.sqrt(252)
+    ui.render_kpi_strip([
+        dict(label="Front ATM IV", value=_pct(r.get("iv_front"), 1, False), subtext=f"{int(r.get('front_dte', 0) or 0)} days"),
+        dict(label="30-day ATM IV", value=_pct(r.get("iv_30"), 1, False),
+             subtext=f"{_pct(_pctile(h['iv_30'], r.get('iv_30')), 0, False)} percentile, 1y"),
+        dict(label="20-day realised", value=_pct(rv, 1, False), subtext="spot"),
+        dict(label="India VIX", value=_num(dk.vix.iloc[-1], 2) if len(dk.vix) else "—",
+             subtext=f"{_pct(_pctile(dk.vix, dk.vix.iloc[-1]), 0, False)} percentile, 1y" if len(dk.vix) else ""),
+        dict(label="Priced move to expiry", value=f"±{_pct(r.get('straddle'), 2, False)}",
+             subtext=f"±{_num(r.get('straddle', np.nan) * r['spot'])} pts"),
+    ], key=f"vol-kpi-{sym}")
+    _vol_charts(P.assign(rv20=P.groupby("symbol")["spot"].transform(lambda s: np.log(s).diff().rolling(20).std() * np.sqrt(252))),
+                dk, sym, start)
+    if len(dk.vix):
+        vx = dk.vix[dk.vix.index >= start]
+        fig = go.Figure(go.Scatter(x=vx.index, y=vx.values, line_color=chart_color("rose")))
+        for q, c in ((0.2, "emerald"), (0.8, "amber")):
+            fig.add_hline(y=float(dk.vix.tail(250).quantile(q)), line_dash="dot", line_color=chart_color(c),
+                          annotation_text=f"{int(q * 100)}th pct, 1y")
+        fig.update_layout(**chart_layout(height=260, show_legend=False))
+        ui.render_chart_panel(fig, "vix", "India VIX", units="index")
+
+
+@st.fragment
+def _fut_tab(P, start):
+    sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_fut")
+    _futures(P, sym, start)
+
+
 def render(dk, meta: dict):
     P = dk.panel
     start = pd.Timestamp(meta.get("start") or (dk.asof - pd.Timedelta(days=730)))
@@ -439,51 +493,12 @@ def render(dk, meta: dict):
     with tabs[1]:
         _breadth(dk, start)
     with tabs[2]:
-        sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_oi")
-        v = dk.views.get(sym)
-        if not v:
-            ui.render_empty_state("No chain", "The option chain for this session could not be read.", eyebrow="Gamma & OI")
-        else:
-            r = _last(P, sym)
-            ui.render_kpi_strip([
-                dict(label="Spot", value=_num(v["spot"], 2), subtext=f"nearest expiry {pd.Timestamp(v['expiry']):%d %b}"),
-                dict(label="Max pain", value=_num(r.get("max_pain")), subtext=_pct(r.get("max_pain_d"), 2) + " from forward"),
-                dict(label="Call wall", value=_num(r.get("wall_call")), subtext="largest call OI above"),
-                dict(label="Put wall", value=_num(r.get("wall_put")), subtext="largest put OI below"),
-                dict(label="Gamma flip", value=_num(r.get("flip")), subtext=_regime(r)[0],
-                     color_class="success" if r.get("gex_dealer", 0) > 0 else "danger"),
-            ], key=f"oi-kpi-{sym}")
-            _oi_chart(v, sym, r)
-            _gex_chart(v, sym, r)
+        _oi_tab(dk, P)
     with tabs[3]:
-        sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_vol")
-        h = P[P["symbol"] == sym].sort_values("date")
-        r = h.iloc[-1]
-        rv = np.log(h["spot"]).diff().rolling(20).std().iloc[-1] * np.sqrt(252)
-        ui.render_kpi_strip([
-            dict(label="Front ATM IV", value=_pct(r.get("iv_front"), 1, False), subtext=f"{int(r.get('front_dte', 0) or 0)} days"),
-            dict(label="30-day ATM IV", value=_pct(r.get("iv_30"), 1, False),
-                 subtext=f"{_pct(_pctile(h['iv_30'], r.get('iv_30')), 0, False)} percentile, 1y"),
-            dict(label="20-day realised", value=_pct(rv, 1, False), subtext="spot"),
-            dict(label="India VIX", value=_num(dk.vix.iloc[-1], 2) if len(dk.vix) else "—",
-                 subtext=f"{_pct(_pctile(dk.vix, dk.vix.iloc[-1]), 0, False)} percentile, 1y" if len(dk.vix) else ""),
-            dict(label="Priced move to expiry", value=f"±{_pct(r.get('straddle'), 2, False)}",
-                 subtext=f"±{_num(r.get('straddle', np.nan) * r['spot'])} pts"),
-        ], key=f"vol-kpi-{sym}")
-        _vol_charts(P.assign(rv20=P.groupby("symbol")["spot"].transform(lambda s: np.log(s).diff().rolling(20).std() * np.sqrt(252))),
-                    dk, sym, start)
-        if len(dk.vix):
-            vx = dk.vix[dk.vix.index >= start]
-            fig = go.Figure(go.Scatter(x=vx.index, y=vx.values, line_color=chart_color("rose")))
-            for q, c in ((0.2, "emerald"), (0.8, "amber")):
-                fig.add_hline(y=float(dk.vix.tail(250).quantile(q)), line_dash="dot", line_color=chart_color(c),
-                              annotation_text=f"{int(q * 100)}th pct, 1y")
-            fig.update_layout(**chart_layout(height=260, show_legend=False))
-            ui.render_chart_panel(fig, "vix", "India VIX", units="index")
+        _vol_tab(dk, P, start)
     with tabs[4]:
         _participants(dk, start)
     with tabs[5]:
-        sym = st.radio("Index", ["NIFTY", "BANKNIFTY"], horizontal=True, key="desk_sym_fut")
-        _futures(P, sym, start)
+        _fut_tab(P, start)
     with tabs[6]:
         _evidence(dk)

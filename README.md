@@ -45,10 +45,10 @@ names that fit, long and short balanced.
 
 | Book (1× gross, net of costs, 2019 – Nov 2026) | Sharpe | Return / yr | Volatility | Worst drawdown |
 |---|---|---|---|---|
-| model book, ~30 names | 0.74 | 5.5% | 7.4% | −13.5% |
-| 20 names | 0.75 | 6.3% | 8.4% | −13.0% |
-| 12 names | 0.71 | 7.4% | 10.4% | −16.4% |
-| 6 names | 0.27 | 3.9% | 14.6% | −25.3% |
+| model book, ~30 names | 0.80 | 5.9% | 7.4% | −13.4% |
+| 20 names | 0.74 | 6.2% | 8.4% | −13.0% |
+| 12 names | 0.70 | 7.3% | 10.4% | −16.0% |
+| 6 names | 0.24 | 3.5% | 14.6% | −26.6% |
 
 A modest, market-neutral edge. Below ~12 names it is mostly stock-specific noise.
 Designed on 2024–25 and confirmed on 2019–22, which no design choice had seen. Flat in
@@ -67,8 +67,11 @@ Designed on 2024–25 and confirmed on 2019–22, which no design choice had see
 * Splits, bonuses and demergers rescale entry, stop and lot by the exchange's factor,
   confirmed by the price jump, so P&L is continuous and lot revisions aren't mistaken
   for corporate actions.
-* The same engine produces the backtest, the live book and the tickets (checked equal
-  at 58 dates).
+* The backtest simulator and the live ledger hold identical books (checked at 97 dates),
+  and every leg ever booked is checked against the exchange files (docs/AUDIT.md).
+* A stock leaving F&O (no next contract listed) is closed at its due roll; a contract that
+  stops printing early (merger, rename) at its last print. Rolls count NSE sessions,
+  holidays included, and are announced on the ticket before they happen.
 
 ## Run it
 

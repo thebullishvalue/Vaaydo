@@ -214,10 +214,32 @@ def run(asof: date | None = None, progress=None) -> Run:
             continue
         trades.append(dict(symbol=p.symbol, side="LONG" if p.side > 0 else "SHORT", signal=p.signal.date(),
                            entry=p.legs[0].entry_date.date(), entry_px=p.legs[0].entry_px,
-                           exit=p.legs[-1].exit_date.date(), exit_px=p.legs[-1].exit_px, legs=len(p.legs), why=why,
+                           entry_contract=p.legs[0].contract.date(),
+                           exit=p.legs[-1].exit_date.date(), exit_px=p.legs[-1].exit_px,
+                           exit_contract=p.legs[-1].contract.date(), legs=len(p.legs), why=why,
                            sessions=int(((M.cal >= p.legs[0].entry_date) & (M.cal <= p.legs[-1].exit_date)).sum()),
                            ret=_trade_return(p, cost)))
     return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ext, ratios, dates, notes, ban, (nb_date, nb))
+
+
+def _roll_plan(M, A, s, contract) -> tuple:
+    """(roll date, what happens): the close at which this contract is rolled (3 sessions before
+    expiry), known in advance from the calendar, and whether a later contract is listed today."""
+    if contract is None:
+        return None, ""
+    left = M.cal_pos.get(pd.Timestamp(contract), None)
+    if left is None:
+        return None, ""
+    left -= M.cal_pos.get(A, 0)
+    k = left - M.roll_before
+    if 0 <= k and M.cal_pos[A] + k < len(M.cal):
+        when = M.cal[M.cal_pos[A] + k]
+    else:
+        from .nse_calendar import holidays, session_offset
+        when = session_offset(A, max(k, 0), holidays(M.contracts_on.get((A, s), []))) if k > 0 else A
+    later = sorted(e for e in M.contracts_on.get((A, s), []) if e > pd.Timestamp(contract))
+    what = f"roll to FUT {later[0]:%d %b %y}" if later else "close: no later contract listed (leaving F&O?)"
+    return when, what
 
 
 def _positions(M, led, A, screen: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -226,18 +248,24 @@ def _positions(M, led, A, screen: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
     items = [(s, p, "ENTER" if led.decisions.get(s, ("",))[0] == "ENTER" else "HOLD", "") for s, p in led.held.items()]
     items += [(p.symbol, p, "EXIT", why) for p, why, d in led.closed if d == A]
     for s, p, action, why in items:
+        first_contract = first_px = first_adj = leg_since = leg_px = None
         if action == "ENTER":
             contract = M.fill_contract.get((A, s), M.active.get((A, s)))
             last = M.px(A, s, contract) if contract is not None else np.nan
             lot = int(M.lot.get((A, s, contract), 0) or 0) if contract is not None else 0
             stop = last * p.k if (p.k and np.isfinite(last)) else np.nan     # from today's close
             entry_px, entry_date, realised, open_pnl, total, pnl_pct = np.nan, None, np.nan, np.nan, np.nan, np.nan
+            first_contract = contract
         else:
             leg = p.leg
             contract, lot = leg.contract, leg.lot
             last = M.px(A, s, leg.contract)
             stop = p.stop if p.stop is not None else np.nan
             entry_px, entry_date = p.legs[0].entry_px * p.legs[0].adj, p.legs[0].entry_date
+            # what was actually traded: the first fill's contract and exchange price (before any
+            # corporate-action factor), and the current leg's contract, start and price
+            first_contract, first_px, first_adj = p.legs[0].contract, p.legs[0].entry_px, p.legs[0].adj
+            leg_since, leg_px = leg.entry_date, leg.entry_px
             realised = p.realised()
             open_pnl = p.side * (last - leg.entry_px * leg.adj) * lot if np.isfinite(last) else np.nan
             total = realised + (open_pnl if np.isfinite(open_pnl) else 0.0)
@@ -253,13 +281,15 @@ def _positions(M, led, A, screen: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
             for i, l in enumerate(p.legs):
                 xp = l.exit_px if l.exit_px is not None else None
                 legrows.append(dict(symbol=s, side="LONG" if p.side > 0 else "SHORT", leg=i + 1, contract=l.contract.date(),
-                                    entry_date=l.entry_date.date(), entry_px=l.entry_px * l.adj, lot=l.lot,
+                                    entry_date=l.entry_date.date(), entry_px=l.entry_px * l.adj, fill_px=l.entry_px,
+                                    adj=l.adj, lot=l.lot,
                                     exit_date=l.exit_date.date() if l.exit_date is not None else None, exit_px=xp,
                                     status=l.exit_why or ("open" if i == len(p.legs) - 1 else ""),
                                     pnl=p.side * ((xp if xp is not None else last) - l.entry_px * l.adj) * l.lot,
                                     adjusted=l.adj != 1.0))
         sr = scr.loc[s] if s in scr.index else pd.Series(dtype=float)
         risk = abs(last - stop) * lot if (np.isfinite(stop) and np.isfinite(last)) else np.nan
+        roll_on, roll_what = _roll_plan(M, A, s, contract) if action != "EXIT" else (None, "")
         rows.append(dict(
             action=action, symbol=s, side="LONG" if p.side > 0 else "SHORT", signal=p.signal.date(),
             contract=pd.Timestamp(contract).date() if contract is not None else None, lot=lot, legs=max(len(p.legs), 1),
@@ -268,6 +298,10 @@ def _positions(M, led, A, screen: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
             stop=stop, stop_from_last=(stop / last - 1) if np.isfinite(stop) and np.isfinite(last) and last else np.nan,
             risk_to_stop=risk, range_lo=last * sr.get("range_lo_r", np.nan), range_hi=last * sr.get("range_hi_r", np.nan),
             notional=last * lot if np.isfinite(last) else np.nan, why=why or (sr.get("why") or ""),
+            first_contract=pd.Timestamp(first_contract).date() if first_contract is not None else None,
+            first_px=first_px, first_adj=first_adj,
+            leg_since=leg_since.date() if leg_since is not None else None, leg_px=leg_px,
+            roll_on=roll_on.date() if roll_on is not None else None, roll_what=roll_what,
             industry=sr.get("industry", "—"), score=sr.get("score", np.nan)))
     pos = pd.DataFrame(rows)
     if len(pos):

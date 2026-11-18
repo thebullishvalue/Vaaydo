@@ -78,12 +78,18 @@ def test_corporate_action_rescales_entry_and_keeps_pnl_continuous():
 
 
 def test_contracts_tradable_at_the_latest_date():
-    days = pd.bdate_range("2026-11-02", "2026-11-17")
+    days = pd.bdate_range("2026-11-02", "2026-11-16")
     rows = [dict(date=d, symbol="X", expiry=e, open=100.0, close=100.0, lot=10)
-            for d in days for e in (pd.Timestamp("2026-11-24"), pd.Timestamp("2026-12-29"))]
+            for d in days for e in (pd.Timestamp("2026-11-23"), pd.Timestamp("2026-12-29"))]
     M = LG.Market(pd.DataFrame(rows))
-    assert M.active[(days[-1], "X")] == pd.Timestamp("2026-11-24")     # 5 sessions left > 3
-    assert M.fill_contract[(days[-1], "X")] == pd.Timestamp("2026-11-24")
+    assert M.active[(days[-1], "X")] == pd.Timestamp("2026-11-23")     # 5 sessions left > 3
+    assert M.fill_contract[(days[-1], "X")] == pd.Timestamp("2026-11-23")
+
+
+def test_sessions_to_expiry_skip_nse_holidays():
+    # 22 Dec 2026: 23, 24, 28, 29 Dec are sessions (25 Dec is a holiday): 4 left, not 5
+    cal = pd.bdate_range("2026-12-14", "2026-12-22")
+    assert LG._expiry_positions(cal, [pd.Timestamp("2026-12-29")])[0] - (len(cal) - 1) == 4
 
 
 def test_fno_ban_defers_the_entry_to_the_first_unbanned_session():
@@ -92,3 +98,34 @@ def test_fno_ban_defers_the_entry_to_the_first_unbanned_session():
     led = LG.replay(M, days, {d: {"X": 1} for d in days}, _ratios(days), fno_ban=ban)
     p = led.held["X"]
     assert p.legs[0].entry_date == days[3] and p.signal == days[2]   # re-decided at the last banned close
+
+
+def test_no_next_contract_closes_at_the_roll_close():
+    # only one contract ever listed (the stock is leaving F&O): close when the roll falls due
+    M, days = _market({"2026-01-09": [100, 100, 101, 102, 103, 104, 105]}, start="2026-01-01")
+    led = LG.replay(M, days, {d: {"X": 1} for d in days}, _ratios(days))
+    assert "X" not in led.held
+    p = [p for p, why, d in led.closed if p.symbol == "X"][0]
+    leg = p.legs[-1]
+    assert leg.exit_why == "no next contract" and leg.exit_date <= leg.contract
+    assert leg.exit_px == M.px(leg.exit_date, "X", leg.contract)
+
+
+def test_contract_that_stops_printing_closes_at_its_last_print():
+    M, days = _market({"2026-03-26": [100, 100, 101, 102, None, None]})
+    led = LG.replay(M, days, {d: {"X": 1} for d in days}, _ratios(days))
+    p = [p for p, why, d in led.closed if p.symbol == "X"][0]
+    assert p.legs[-1].exit_px == 102 and p.legs[-1].exit_date == days[3]
+    assert p.legs[-1].exit_why == "contract stopped trading"
+
+
+def test_simulator_closes_like_the_ledger_when_no_next_contract():
+    from vaaydo import book as B
+    days = pd.bdate_range("2026-01-01", periods=7)
+    rows = [dict(date=d, symbol=f"S{k}", expiry=pd.Timestamp("2026-01-09"), open=100.0 + i, close=100.0 + i + 1, lot=10)
+            for k in range(60) for i, d in enumerate(days)]
+    P = B.Prices(pd.DataFrame(rows))
+    sc = pd.DataFrame([dict(date=d, symbol=f"S{k}", score=float(k)) for d in days for k in range(60)])
+    R = B.simulate(sc, P, enter=0.05, stay=0.15)
+    names = R["names"].tolist()
+    assert names[-1] == "" and any(n for n in names[:-1])     # held, then closed at the due roll

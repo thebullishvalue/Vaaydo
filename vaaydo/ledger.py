@@ -16,6 +16,10 @@ A position is a chain of LEGS, one per futures contract it was held in:
               leaves the band
     corporate actions   a split/bonus/demerger rescales the open leg's entry price and the
               trailing levels by the exchange's adjustment factor, so P&L is continuous
+    no next contract    when the roll is due and NSE has listed no later contract (the stock is
+              leaving F&O), the position is closed at that close, as a roll would be
+    terminated contract if the held contract stops printing before its expiry (merger, rename),
+              the position is closed at its last exchange close
 
 Stateless: the same inputs always replay to the same ledger.
 """
@@ -32,15 +36,18 @@ ROLL_BEFORE = 3
 
 def _expiry_positions(cal: pd.DatetimeIndex, expiries) -> np.ndarray:
     """Session index of each expiry. Expiries beyond the known calendar (the future, at the
-    latest date) are placed by counting business days past its end; without this every
-    future expiry looks one session away and no contract qualifies as tradable."""
+    latest date) are placed by counting NSE sessions past its end: weekdays minus the
+    exchange's holidays (listed, and implied by the listed expiries themselves). Without the
+    holidays a contract would look one session further from expiry than it is and roll a day late."""
+    from .nse_calendar import holidays, sessions_after
+    hol = holidays(expiries)
     out = []
     for e in expiries:
         e = pd.Timestamp(e)
         if e <= cal[-1]:
             out.append(int(np.searchsorted(cal, e)))
         else:
-            out.append(len(cal) - 1 + int(np.busday_count(cal[-1].date(), e.date())))
+            out.append(len(cal) - 1 + sessions_after(cal[-1], e, hol))
     return np.array(out)
 
 
@@ -72,6 +79,8 @@ class Position:
     legs: list = field(default_factory=list)
     best: float | None = None            # best close since entry (futures, adjusted)
     pending: bool = True                 # decided, not yet filled
+    last_close: float | None = None      # last exchange close of the current leg, and its date
+    last_date: pd.Timestamp | None = None
 
     @property
     def leg(self) -> Leg | None:
@@ -100,6 +109,10 @@ class Market:
         F["i"] = F["date"].map(pos)
         exps = sorted(F["expiry"].unique())
         exp_i = pd.Series(_expiry_positions(self.cal, exps), index=exps)
+        self.roll_before = roll_before
+        self.present = set(zip(F["date"], F["symbol"]))
+        self.contracts_on = F.groupby(["date", "symbol"])["expiry"].apply(list).to_dict()
+        self.cal_pos = {**{e: int(v) for e, v in exp_i.items()}, **{d: i for i, d in enumerate(self.cal)}}
         F["left"] = F["expiry"].map(exp_i) - F["i"]
         act = F[F["left"] > roll_before].sort_values("expiry").groupby(["date", "symbol"]).first().reset_index()
         self.active = act.set_index(["date", "symbol"])["expiry"].to_dict()
@@ -138,6 +151,7 @@ def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None,
     banned: dict[str, int] = {}
     led = Ledger()
     for i, d in enumerate(dates):
+        terminated: dict[str, bool] = {}
         # ── 1) fills and marks of day d: entries/exits decided at d-1 execute at d's open ──
         for s, p in list(held.items()):
             if p.pending:
@@ -158,9 +172,26 @@ def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None,
                 p.best = p.best * f if p.best is not None else None
                 leg.lot = int(round(leg.lot / f)) if leg.lot else leg.lot
             c = M.px(d, s, leg.contract)
+            if not np.isfinite(c) and d < leg.contract and (d, s) not in M.present:
+                # the contract stopped printing before its expiry: close at its last print
+                if p.last_close is not None:
+                    leg.exit_date, leg.exit_px, leg.exit_why = p.last_date, p.last_close, "contract stopped trading"
+                    led.closed.append((p, "contract stopped trading (corporate action)", d))
+                    terminated[s] = True
+                del held[s]
+                continue
             if np.isfinite(c):
                 p.best = c if p.best is None else (max(p.best, c) if p.side > 0 else min(p.best, c))
+                p.last_close, p.last_date = c, d
             nxt_contract = M.active.get((d, s))
+            if nxt_contract is None and M.cal_pos.get(leg.contract, 10 ** 9) - M.cal_pos.get(d, 0) <= M.roll_before \
+                    and np.isfinite(c):
+                # the roll is due and no later contract is listed: the stock is leaving F&O
+                leg.exit_date, leg.exit_px, leg.exit_why = d, c, "no next contract"
+                led.closed.append((p, "no next contract listed (leaving F&O): closed at the roll", d))
+                terminated[s] = True
+                del held[s]
+                continue
             if nxt_contract is not None and nxt_contract != leg.contract:   # roll at today's close
                 c_old, c_new = M.px(d, s, leg.contract), M.px(d, s, nxt_contract)
                 if np.isfinite(c_old) and np.isfinite(c_new):
@@ -169,7 +200,7 @@ def replay(M: Market, dates, model: dict, ratios: dict, ext: dict | None = None,
                     p.best = p.best * (c_new / c_old) if p.best is not None else c_new   # trail in new-contract terms
         # ── 2) decisions at the close of d ──
         m = model.get(d, {})
-        decisions = {}
+        decisions = {s: ("EXIT", "no next contract listed / contract stopped trading") for s in terminated}
         exits = {}
         for s, p in held.items():
             if p.pending:

@@ -20,17 +20,10 @@ from .simulate import futures_cost
 
 
 def _expiry_positions(cal: pd.DatetimeIndex, expiries) -> np.ndarray:
-    """Session index of each expiry. Expiries beyond the known calendar (the future, at the
-    latest date) are placed by counting business days past its end; without this every
-    future expiry looks one session away and no contract qualifies as tradable."""
-    out = []
-    for e in expiries:
-        e = pd.Timestamp(e)
-        if e <= cal[-1]:
-            out.append(int(np.searchsorted(cal, e)))
-        else:
-            out.append(len(cal) - 1 + int(np.busday_count(cal[-1].date(), e.date())))
-    return np.array(out)
+    """The ledger's: one definition of sessions-to-expiry (NSE holidays included) for both engines."""
+    from .ledger import _expiry_positions as f
+    return f(cal, expiries)
+
 
 def corporate_action_factors(F: pd.DataFrame) -> dict:
     """{(date, symbol): f}: on a split or bonus NSE adjusts EXISTING futures contracts
@@ -90,6 +83,9 @@ class Prices:
         F["left"] = F["expiry"].map(exp_i) - F["i"]
         act = F[F["left"] > roll_before].sort_values("expiry").groupby(["date", "symbol"]).first().reset_index()
         self.active = act.set_index(["date", "symbol"])["expiry"]
+        self.roll_before = roll_before
+        self.cal_pos = {**{e: int(v) for e, v in exp_i.items()}, **{d: i for i, d in enumerate(cal)}}
+        self.present = set(zip(F["date"], F["symbol"]))          # the symbol is in the day's file
         F = F.set_index(["date", "symbol", "expiry"])
         self.o = F["open"]
         self.c = F["close"]
@@ -118,6 +114,7 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
     cal = [d for d in P.cal if (start is None or d >= pd.Timestamp(start)) and (end is None or d <= pd.Timestamp(end))]
     book = {}       # symbol -> dict(side, expiry, ref, stop)
     banned = {}     # stopped-out names: no re-entry on that side until the signal leaves the band
+    model = {}      # signal-level membership (hysteresis on the signal alone)
     rows = []
     for k in range(len(cal) - 1):
         d, nxt = cal[k], cal[k + 1]
@@ -127,12 +124,18 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
         if membership is not None:
             want = dict(membership.get(d, {s: v["side"] for s, v in book.items()}))
         elif pct is not None and len(pct) >= 50:
+            # signal membership is the MODEL's (enter 5%, stay 15%), kept independently of what
+            # the trading book holds, so a stopped-out name stays banned while its signal stays
+            # in the band: the same rule as the live ledger
+            new_model = {}
             for s, p in pct.items():
-                cur = book.get(s, {}).get("side")
+                cur = model.get(s)
                 if p > 1 - enter or (cur == 1 and p > 1 - stay):
-                    want[s] = 1
+                    new_model[s] = 1
                 elif p <= enter or (cur == -1 and p <= stay):
-                    want[s] = -1
+                    new_model[s] = -1
+            model = new_model
+            want = dict(model)
         else:
             want = {s: v["side"] for s, v in book.items()}
         if ban_after_stop:
@@ -163,6 +166,18 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                 if held.get("stop") and np.isfinite(c_prev):
                     lvl = held["stop"]
                     stopped = (c_prev <= lvl) if held["side"] > 0 else (c_prev >= lvl)
+                if (nxt, s) not in P.present and nxt < e:
+                    # the contract stopped printing before expiry (merger, rename): closed at its last print
+                    pnl[held["side"]].append(-half)
+                    trades += 1
+                    continue
+                act_n = P.active.get((nxt, s))
+                if act_n is None and P.cal_pos.get(e, 10 ** 9) - P.cal_pos.get(nxt, 0) <= P.roll_before \
+                        and np.isfinite(c_now) and np.isfinite(c_prev):
+                    # roll due, no later contract listed (leaving F&O): closed at this close, like a roll
+                    pnl[held["side"]].append(held["side"] * (c_now / c_prev_adj - 1) - half)
+                    trades += 1
+                    continue
                 if w == held["side"] and not stopped:
                     if not np.isfinite(c_now) or not np.isfinite(c_prev):
                         new_book[s] = held

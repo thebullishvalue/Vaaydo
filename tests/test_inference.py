@@ -44,3 +44,16 @@ def test_oas_is_symmetric_positive_definite_and_shrinks_toward_identity():
     R = INF.oas(S, 40)
     assert np.allclose(R, R.T) and np.linalg.eigvalsh(R).min() > 0
     assert np.linalg.cond(R) < np.linalg.cond(S)
+
+
+def test_precedent_never_uses_an_outcome_not_yet_realised():
+    # outcome at row i is known at open i+1+h; poison every outcome that would need a future open
+    rng = np.random.default_rng(9)
+    idx = pd.bdate_range("2015-01-01", periods=620)
+    st = pd.DataFrame(rng.normal(size=(620, 2)), index=idx)
+    f = pd.Series(rng.normal(size=620), index=idx)
+    t, h = 619, 5
+    clean = INF.precedent_now(st, f, h, min_pool=300)
+    g = f.copy()
+    g.iloc[t - h:] = 1e6                     # rows whose outcome is not realised at t's close
+    assert np.isclose(INF.precedent_now(st, g, h, min_pool=300)["read"], clean["read"])

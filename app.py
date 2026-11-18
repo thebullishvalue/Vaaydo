@@ -241,6 +241,8 @@ if size_on and capital:
     sp, sl = curator.sized(r, capital, leverage, members)
     book_pos, book_legs = sp, sl
 T = track()
+if meta.get("mode") == "Single Date":
+    T = T[T.index <= r.asof]          # a past-dated run shows only what was known that evening
 new_l = scr[scr["state"] == "▲ NEW"]
 new_s = scr[scr["state"] == "▼ NEW"]
 held = book_pos[book_pos["action"] != "EXIT"] if len(book_pos) else book_pos
@@ -276,26 +278,44 @@ for n in r.notes:
 ui.render_notice_rail(notices)
 
 
+def fut(c) -> str:
+    return f"FUT {pd.Timestamp(c):%d %b %y}" if c is not None and not pd.isna(c) else "—"
+
+
 def tickets(df: pd.DataFrame, kind: str):
-    """Order tickets as the app's institutional table."""
+    """Order tickets. A held position is a chain of contract legs, so a ticket shows what was
+    actually traded first (contract, date, exchange price), the contract held now (since its
+    last roll, at that roll's price), and the next roll, known in advance from the calendar."""
     if df is None or df.empty:
         return
     rows = []
     for _, p in df.iterrows():
-        unfilled = kind == "ENTER" or p["entry_px"] is None or not np.isfinite(p["entry_px"])
+        enter = kind == "ENTER" or p.get("action") == "ENTER"      # a new signal: not filled until the next open
+        if enter:
+            opened = f"next open · {fut(p['contract'])}"
+            now_in = "—"
+        else:
+            adj = p.get("first_adj")
+            opened = f"{px(p['first_px'])} · {fmt_date(p['entry_date'])} · {fut(p['first_contract'])}"
+            if adj is not None and np.isfinite(adj) and adj != 1.0:
+                opened += f" (= {px(p['first_px'] * adj)} after a ×{adj:.3g} split/bonus)"
+            now_in = fut(p["contract"]) if p["legs"] == 1 else \
+                f"{fut(p['contract'])} · rolled {fmt_date(p['leg_since'])} at {px(p['leg_px'])}"
+        roll = "—" if kind == "EXIT" or p.get("roll_on") is None or pd.isna(p.get("roll_on")) else \
+            f"{fmt_date(p['roll_on'])} close · {p['roll_what']}"
         rows.append({
             "Symbol": p["symbol"], "Side": ("▲ " if p["side"] == "LONG" else "▼ ") + p["side"],
-            "Contract": f"FUT {pd.Timestamp(p['contract']):%d %b %y}" if p["contract"] is not None else "—",
-            "Lot": int(p["lot"]) if p["lot"] else "—",
             "Signal": fmt_date(p["signal"]),
-            "Entry": "next open" if unfilled else f"{px(p['entry_px'])} · {fmt_date(p['entry_date'])}",
+            "Opened": opened,
+            "Holding now": now_in,
+            "Lot": int(p["lot"]) if p["lot"] else "—",
             "Last": px(p["last"]),
-            "P&L": "—" if unfilled else inr(p["pnl"], True),
-            "Return": "—" if unfilled else pct(p["pnl_pct"]),
+            "P&L (all legs, before charges)": "—" if enter else inr(p["pnl"], True),
+            "Return": "—" if enter else pct(p["pnl_pct"]),
             "Stop": f"{px(p['stop'])} ({pct(p['stop_from_last'])})",
             "Risk to stop": inr(p["risk_to_stop"]),
+            "Next roll": roll,
             "Range (80%)": f"{px(p['range_lo'])} – {px(p['range_hi'])}",
-            "Legs": int(p["legs"]),
             "Industry": p.get("industry", "—"),
             "Why": p["why"] or "",
         })
@@ -306,14 +326,70 @@ def leg_table(lg: pd.DataFrame, sym: str):
     x = lg[lg["symbol"] == sym]
     if x.empty:
         return
+    fills = []
+    for a, b, f in zip(x["fill_px"], x["entry_date"], x["adj"]):
+        t = f"{px(a)} · {fmt_date(b)}"
+        if f is not None and np.isfinite(f) and f != 1.0:
+            t += f" (= {px(a * f)} after ×{f:.3g})"
+        fills.append(t)
     t = pd.DataFrame({
-        "Leg": x["leg"], "Contract": [f"FUT {pd.Timestamp(c):%d %b %y}" for c in x["contract"]],
-        "Entry": [f"{px(a)} · {fmt_date(b)}" for a, b in zip(x["entry_px"], x["entry_date"])],
-        "Lot": x["lot"],
-        "Exit": [("open" if e is None or pd.isna(e) else f"{px(a)} · {fmt_date(e)}") for a, e in zip(x["exit_px"], x["exit_date"])],
-        "Status": x["status"], "P&L": [inr(v, True) for v in x["pnl"]],
-        "Adjusted": ["split/bonus factor applied" if a else "" for a in x["adjusted"]]})
+        "Leg": x["leg"], "Contract": [fut(c) for c in x["contract"]],
+        "Filled": fills, "Lot": x["lot"],
+        "Closed": [("open" if e is None or pd.isna(e) else f"{px(a)} · {fmt_date(e)}") for a, e in zip(x["exit_px"], x["exit_date"])],
+        "How": x["status"], "P&L": [inr(v, True) for v in x["pnl"]]})
     ui.render_data_table(t, show_index=False, max_height=260)
+    st.markdown('<div class="panel-copy">Each leg is one futures contract: bought or sold at the exchange print shown, '
+                'closed at its roll (the close three sessions before expiry, into the next contract at that same close) or '
+                'at the exit. P&L adds every leg.</div>', unsafe_allow_html=True)
+
+
+@st.fragment
+def position_legs(held: pd.DataFrame, book_legs: pd.DataFrame):
+    """Picking a position reruns only this block, so the page stays on the Book tab."""
+    sym = st.selectbox("Position", list(held["symbol"]), key="book_sym")
+    p = held.set_index("symbol").loc[sym]
+    ui.render_section_header(f"{sym} · {p['side']}", f"Signal {fmt_date(p['signal'])} · {int(p['legs'])} leg(s) · "
+                             f"realised {inr(p['realised'], True)} · open {inr(p['open_pnl'], True)}", icon="list")
+    leg_table(book_legs, sym)
+
+
+@st.fragment
+def contracts_scanner(cf: pd.DataFrame):
+    """Interacting with the scanner reruns only this block, so the page keeps its tab."""
+    c1, c2, c3 = st.columns(3)
+    scan = c1.selectbox("Scan", ["Most active", "Open interest gainers", "Open interest losers", "Buyers opening",
+                                 "Writers opening", "Premium gainers", "Premium losers", "Volume above open interest"],
+                        key="scan")
+    side = c2.selectbox("Side", ["Both", "Calls", "Puts"], key="scan_side")
+    stock = c3.selectbox("Underlying", ["All"] + sorted(cf["symbol"].unique()), key="scan_sym")
+    x = cf[cf["inst"].astype(str) == "STO"].copy()
+    if side != "Both":
+        x = x[x["otype"] == ("CE" if side == "Calls" else "PE")]
+    if stock != "All":
+        x = x[x["symbol"] == stock]
+    lot = x["lot"].where(x["lot"] > 0, 1)
+    x["value"] = x["contracts"] * lot * x["close"]
+    x["oi_lots"] = x["oi"] / lot
+    x["oi_pct"] = x["oi_chg"] / x["oi_start"].where(x["oi_start"] > 0)
+    x = x[x["contracts"] > 0]
+    sorts = {"Most active": ("value", False, None), "Open interest gainers": ("oi_chg_lots", False, x["oi_chg_lots"] > 0),
+             "Open interest losers": ("oi_chg_lots", True, x["oi_chg_lots"] < 0),
+             "Buyers opening": ("oi_chg_lots", False, x["flow"] == "buyers opening"),
+             "Writers opening": ("oi_chg_lots", False, x["flow"] == "writers opening"),
+             "Premium gainers": ("premium_chg", False, x["premium_chg"] > 0),
+             "Premium losers": ("premium_chg", True, x["premium_chg"] < 0),
+             "Volume above open interest": ("contracts", False, x["unusual"])}
+    col, asc, mask = sorts[scan]
+    if mask is not None:
+        x = x[mask]
+    x = x.sort_values(col, ascending=asc).head(100)
+    ui.render_data_table(pd.DataFrame({
+        "Contract": [f"{s} {pd.Timestamp(e):%d %b %y} {k:g} {o}" for s, e, k, o in zip(x["symbol"], x["expiry"], x["strike"], x["otype"])],
+        "Premium": x["close"].round(2), "Change": [pct(v) for v in x["premium_chg"]],
+        "Lots traded": x["contracts"], "Value": [inr(v) for v in x["value"]],
+        "OI (lots)": x["oi_lots"].round(0).astype("Int64"), "OI change (lots)": x["oi_chg_lots"].round(0).astype("Int64"),
+        "OI change": [pct(v) for v in x["oi_pct"]], "Reading": x["flow"].replace("", "—")}),
+        show_index=False, label_col="Contract", max_height=560)
 
 
 # ── Single Date ─────────────────────────────────────────────────────────────
@@ -351,8 +427,19 @@ if meta.get("mode") == "Single Date":
             tickets(exits, "EXIT")
         else:
             ui.render_empty_state("No exits", "Every position stays.", eyebrow="Exits")
-        ui.render_section_header("Holding", "Open positions, with P&L since entry across every roll, and today's stop.",
-                                 icon="layers")
+        due = held[held["roll_on"].notna()] if len(held) and "roll_on" in held else held.iloc[0:0]
+        if len(due):
+            nxt = due["roll_on"].min()
+            due = due[due["roll_on"] == nxt]
+            ui.render_section_header(f"Roll at the {fmt_date(nxt)} close",
+                                     "Close the current contract and open the next one at that session's close. "
+                                     "Known in advance: three sessions before expiry.", icon="move-horizontal")
+            ui.render_data_table(pd.DataFrame({
+                "Symbol": due["symbol"], "Side": due["side"], "Lot": due["lot"],
+                "Close": [fut(c) for c in due["contract"]], "Then": due["roll_what"],
+                "Last": [px(v) for v in due["last"]]}), show_index=False, label_col="Symbol", max_height=320)
+        ui.render_section_header("Holding", "Open positions: the contract first traded, the contract held now, P&L across "
+                                 "every leg, today's stop and the next roll.", icon="layers")
         if len(held):
             tickets(held[held["action"] == "HOLD"], "HOLD")
         if size_on and capital:
@@ -374,11 +461,7 @@ if meta.get("mode") == "Single Date":
         ui.render_section_header("Positions", "Pick one to see every contract leg it has been held in.", icon="layers")
         if len(held):
             tickets(held, "HOLD")
-            sym = st.selectbox("Position", list(held["symbol"]), key="book_sym")
-            p = held.set_index("symbol").loc[sym]
-            ui.render_section_header(f"{sym} · {p['side']}", f"Signal {fmt_date(p['signal'])} · {int(p['legs'])} leg(s) · "
-                                     f"realised {inr(p['realised'], True)} · open {inr(p['open_pnl'], True)}", icon="list")
-            leg_table(book_legs, sym)
+            position_legs(held, book_legs)
         ui.render_section_header("By industry", icon="grid")
         if len(held):
             ind = held.groupby(["industry", "side"])["notional"].sum().unstack(fill_value=0)
@@ -449,40 +532,7 @@ if meta.get("mode") == "Single Date":
         if cf is None or cf.empty:
             ui.render_empty_state("No contract data", "The previous session's file was not available.", eyebrow="Contracts")
         else:
-            c1, c2, c3 = st.columns(3)
-            scan = c1.selectbox("Scan", ["Most active", "Open interest gainers", "Open interest losers", "Buyers opening",
-                                         "Writers opening", "Premium gainers", "Premium losers", "Volume above open interest"],
-                                key="scan")
-            side = c2.selectbox("Side", ["Both", "Calls", "Puts"], key="scan_side")
-            stock = c3.selectbox("Underlying", ["All"] + sorted(cf["symbol"].unique()), key="scan_sym")
-            x = cf[cf["inst"].astype(str) == "STO"].copy()
-            if side != "Both":
-                x = x[x["otype"] == ("CE" if side == "Calls" else "PE")]
-            if stock != "All":
-                x = x[x["symbol"] == stock]
-            lot = x["lot"].where(x["lot"] > 0, 1)
-            x["value"] = x["contracts"] * lot * x["close"]
-            x["oi_lots"] = x["oi"] / lot
-            x["oi_pct"] = x["oi_chg"] / x["oi_start"].where(x["oi_start"] > 0)
-            x = x[x["contracts"] > 0]
-            sorts = {"Most active": ("value", False, None), "Open interest gainers": ("oi_chg_lots", False, x["oi_chg_lots"] > 0),
-                     "Open interest losers": ("oi_chg_lots", True, x["oi_chg_lots"] < 0),
-                     "Buyers opening": ("oi_chg_lots", False, x["flow"] == "buyers opening"),
-                     "Writers opening": ("oi_chg_lots", False, x["flow"] == "writers opening"),
-                     "Premium gainers": ("premium_chg", False, x["premium_chg"] > 0),
-                     "Premium losers": ("premium_chg", True, x["premium_chg"] < 0),
-                     "Volume above open interest": ("contracts", False, x["unusual"])}
-            col, asc, mask = sorts[scan]
-            if mask is not None:
-                x = x[mask]
-            x = x.sort_values(col, ascending=asc).head(100)
-            ui.render_data_table(pd.DataFrame({
-                "Contract": [f"{s} {pd.Timestamp(e):%b} {k:g} {o}" for s, e, k, o in zip(x["symbol"], x["expiry"], x["strike"], x["otype"])],
-                "Premium": x["close"].round(2), "Change": [pct(v) for v in x["premium_chg"]],
-                "Lots traded": x["contracts"], "Value": [inr(v) for v in x["value"]],
-                "OI (lots)": x["oi_lots"].round(0).astype("Int64"), "OI change (lots)": x["oi_chg_lots"].round(0).astype("Int64"),
-                "OI change": [pct(v) for v in x["oi_pct"]], "Reading": x["flow"].replace("", "—")}),
-                show_index=False, label_col="Contract", max_height=560)
+            contracts_scanner(cf)
 
     with tabs[5]:
         ui.render_section_header("Every stock", "The screen, ordered by state then score.", icon="grid")
@@ -499,7 +549,7 @@ if meta.get("mode") == "Single Date":
 
     with tabs[6]:
         sr = lambda x: x.mean() / x.std() * np.sqrt(252)
-        ui.render_section_header("Track record, 2019 – today", "Backtest on real NSE futures prices: next-open fills, all "
+        ui.render_section_header(f"Track record, 2019 – {r.asof:%d %b %Y}", "Backtest on real NSE futures prices: next-open fills, all "
                                  "charges and slippage, trailing stops, rolls, corporate actions. Returns on gross exposure.",
                                  icon="trending-up")
         fig = go.Figure()
@@ -569,8 +619,8 @@ else:
             t = tr.sort_values("signal", ascending=False)
             ui.render_data_table(pd.DataFrame({
                 "Symbol": t["symbol"], "Side": t["side"], "Signal": t["signal"].map(fmt_date),
-                "Entry": [f"{px(a)} · {fmt_date(b)}" for a, b in zip(t["entry_px"], t["entry"])],
-                "Exit": [f"{px(a)} · {fmt_date(b)}" for a, b in zip(t["exit_px"], t["exit"])],
+                "Entry": [f"{px(a)} · {fmt_date(b)} · {fut(c)}" for a, b, c in zip(t["entry_px"], t["entry"], t["entry_contract"])],
+                "Exit": [f"{px(a)} · {fmt_date(b)} · {fut(c)}" for a, b, c in zip(t["exit_px"], t["exit"], t["exit_contract"])],
                 "Sessions": t["sessions"], "Legs": t["legs"], "Return": t["ret"].map(pct), "Exit reason": t["why"]}),
                 show_index=False, label_col="Symbol", max_height=600)
     with tabs[1]:

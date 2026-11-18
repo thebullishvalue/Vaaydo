@@ -58,3 +58,54 @@ The intent, the name, the trader-facing summary (one plan, sized, with reasons),
 instinct that a system should watch itself. Here, "watching itself" means a journal
 that compares predicted to realised on every trade, and a walk-forward backtest on real
 prices that anyone can rerun.
+
+## Coherence audit, 18 Nov 2026
+
+Question: does every trade the system shows correspond to something that could actually have
+been traded, in the contract shown, at the price shown, on the date shown?
+
+**Method.** Every leg of every position the ledger has booked since Jul 2024 (1,361 positions,
+2,200 legs) was checked against the exchange files: the contract was listed on the entry day
+and printed on every day held; the fill is that contract's actual open (fills) or close (rolls);
+the first leg is the rule's contract on the fill day; no leg is held past its expiry; roll
+chains are continuous (exit at the old close, entry at the new close, same day); each leg's lot
+is its contract's lot; entry is the session after the signal. Twelve past-dated runs were
+compared with the full replay on the same date (positions, legs, contracts, prices, and that no
+later data is read). The backtest simulator and the live ledger were compared day by day
+(97 checkpoints).
+
+**Found and fixed.**
+1. *Tickets mixed contracts.* A held position showed its current contract (e.g. FUT Nov) next to
+   the first leg's entry date and price (paid in, e.g., the June contract). Tickets now show what
+   was first traded (contract, date, exchange price), the contract held now (since its last roll,
+   at that roll's price), P&L across every leg, and the next roll. Closed trades show the entry and
+   exit contracts. Leg tables show the actual exchange fill, and the adjusted equivalent after a
+   split or bonus.
+2. *Stocks leaving F&O.* When NSE listed no next contract (11 cases: PVRINOX, CHAMBLFERT, BSOFT,
+   IRB, ABFRL, CESC, TATACHEM, HFCL, IRCTC, SYNGENE, SAMMAANCAP), both engines held the expiring
+   contract past expiry; the ledger then "exited" with no price and the trade fell out of the
+   statistics. Now: when the roll falls due and no later contract is listed, the position closes
+   at that close, as a roll would.
+3. *Contracts terminated early* (IDFC merger, GMRINFRA rename): closed at the last exchange print.
+4. *Post-stop re-entry differed between the engines.* The ledger kept a stopped name out while its
+   signal stayed in the band (the registered rule); the simulator built the band from its trading
+   book and re-entered early. The simulator now tracks signal membership like the ledger. The
+   two engines now hold identical books at all 97 checkpoints.
+5. *Exchange holidays beyond the last session.* Sessions-to-expiry beyond the calendar counted
+   plain weekdays, so a holiday inside the last four sessions (e.g. 25 Dec 2026) would roll a day
+   late live and announce the wrong date. Both engines now count NSE sessions: past holidays from
+   the files, announced ones in data/nse_holidays.csv, and holidays implied by NSE moving a listed
+   expiry off its last Tuesday (24 Nov 2026, 26 Jan 2027).
+6. *Rolls announced in advance.* A roll executes at the close three sessions before expiry, after
+   which the evening run is too late to act. Tickets now show each position's next roll date and
+   whether a next contract is listed, and the Signals tab lists the rolls due at the next close.
+7. *Past-dated runs showed later performance.* The track record is now cut at the run's date.
+8. *Precedent look-ahead (index research).* One session; fixed; verdicts unchanged.
+9. *Interface.* Picking a position (Book), a scan (Contracts) or an index (desk) reran the page and
+   returned to the first tab; these controls now rerun only their own block. Option contracts are
+   labelled with their full expiry date.
+
+**After the fixes.** 0 leg issues in 2,200 legs; 0 closed trades without a return; 12/12 past runs
+identical to the full replay with no later data read; 97/97 checkpoints identical between engines.
+Track record regenerated: model book Sharpe 0.80 (was 0.74), 20 names 0.74, 12 names 0.70,
+6 names 0.24.

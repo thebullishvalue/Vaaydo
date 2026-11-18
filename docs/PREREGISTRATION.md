@@ -407,3 +407,8 @@ CI [+0.012, +0.181], 83% (passes); h 10 IC 0.126, HAC 2.43, CI [+0.019, +0.228],
 N4 agreement h 10 IC 0.120, HAC 2.42 (passes); trades disc / val / final: A2 +1.16 / +0.60 /
 −0.40, N2 +0.56 / +0.20 / +0.63, N3 +0.16 / −1.23 / +1.40, N4 +1.20 / −0.11 / +0.17 against
 always-long +0.59 / +1.15 / −0.25. No NIFTY trade adopted. The desk now uses only NSE files.
+Correction (coherence audit, 18 Nov 2026): the precedent engine admitted candidates whose
+outcome needed the next session's open (one-session look-ahead in the backtest; the live read
+was unaffected). Fixed to candidates realised by the decision close. Rerun: N3 h 5 IC 0.099,
+HAC 2.29, CI [+0.011, +0.180], 83% (passes); h 10 IC 0.131, HAC 2.52 (passes); trade
+−0.01 / −1.14 / +1.41 (all +0.38): still loses to always-long in two periods. Verdicts unchanged.

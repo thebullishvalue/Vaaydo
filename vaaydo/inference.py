@@ -125,7 +125,8 @@ def oas(S: np.ndarray, n: int) -> np.ndarray:
 
 def precedent(state: pd.DataFrame, fwd: pd.Series, h: int, k: int = 10, min_pool: int = 500) -> pd.Series:
     """Read at t = mean h-forward outcome of the k nearest past states minus the pool's mean.
-    Candidates: rows i with i + h <= t (outcome realised), all state features finite.
+    Candidates: rows i with i + h + 1 <= t (the outcome, open i+1 to open i+1+h, realised by
+    t's close), all state features finite.
     Distinct episodes: greedy Theiler exclusion of width h on the candidates' positions."""
     X = state.to_numpy(float)
     y = fwd.reindex(state.index).to_numpy(float)
@@ -134,7 +135,9 @@ def precedent(state: pd.DataFrame, fwd: pd.Series, h: int, k: int = 10, min_pool
     for t in range(len(X)):
         if not ok[t]:
             continue
-        cand = np.where(ok[: max(t - h + 1, 0)] & np.isfinite(y[: max(t - h + 1, 0)]))[0]
+        # row i's outcome runs from the open of i+1 to the open of i+1+h, known only from that
+        # open: at t's close the realised candidates are i <= t - h - 1
+        cand = np.where(ok[: max(t - h, 0)] & np.isfinite(y[: max(t - h, 0)]))[0]
         if len(cand) < min_pool:
             continue
         C = X[cand]
@@ -176,7 +179,7 @@ def precedent_now(state: pd.DataFrame, fwd: pd.Series, h: int, k: int = 10, min_
     t = len(X) - 1
     if t < 0 or not ok[t]:
         return {}
-    cand = np.where(ok[: t - h + 1] & np.isfinite(y[: t - h + 1]))[0]
+    cand = np.where(ok[: max(t - h, 0)] & np.isfinite(y[: max(t - h, 0)]))[0]      # realised by t's close
     if len(cand) < min_pool:
         return {}
     C = X[cand]
