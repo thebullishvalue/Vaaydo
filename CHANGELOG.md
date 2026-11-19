@@ -11,6 +11,24 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.3.7] — 2026-11-19 — *The landing page in three segments*
+### Changed
+- **The landing page reads as Arthagati's.** Below the masthead and the claim, three segments in
+  one order: **Engines** (the three parts of the system, each a plain paragraph on what it does
+  and why it matters, then three short facts), **Inputs & Scope** (what it can be pointed at and
+  the history behind it) and **Run Outputs** (the four things a run puts on screen). It ran
+  Coverage, System, What a Run Returns: scope before the system it bounds. Each section now opens
+  with one sentence saying what it holds.
+- **Plain words.** The copy says what each part does and why it matters, without the internal
+  shorthand it carried ("Sharpe 0.85" (now the record as a yearly return), four-row fact lists). A
+  method's name stays only where it helps the reader.
+- **One height, one row.** The three panels are one grid, so they stand at one height with their
+  facts on one baseline (as Streamlit containers each sized to its own copy, the longest panel
+  stood taller); the four output cards sit in one row, then two by two, then one per row on a
+  phone (they wrapped three and one, the fourth alone on its row).
+
+---
+
 ## [7.3.6] — 2026-11-18 — *The family console*
 ### Changed
 - **One console, shared by the family.** `vaaydo/logger_config.py` is now the family console, the same file
