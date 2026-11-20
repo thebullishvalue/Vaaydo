@@ -31,6 +31,12 @@ a table, a chart or a number looks. A change to that shared layer lands in every
   NSE's own bar for the session (about 11 s, no Yahoo), for the stocks in F&O that day only.
 - **A level that cannot be computed is said**: a warning in the run log, a note on the screen, and a
   "Stop levels" line in the result card naming the session whose levels carry.
+- **India VIX comes from NSE, not Yahoo.** The desk called Yahoo for VIX on every run, even with the
+  bundle current, and the nightly refresh rewrote the whole series from it. Both now read India VIX
+  from NSE's daily index-close file (the one the breadth panel already reads), appending only new
+  sessions; a session whose VIX cannot be read is noted on the desk. The shipped series had 18
+  sessions missing (2019–2026) and a blank 19 Nov 2026 (Yahoo's not-yet-posted bar): all filled
+  from NSE, which matches the existing values exactly where both exist.
 ### Changed
 - The run log has its own **Pragyam Levels** step (the time it took was reported under "Replaying the
   Book"). The result card says "Closed trades … since Jul 2024" (or since the reset), "Orders … at the

@@ -214,13 +214,19 @@ def run(asof: date | None = None, progress=None) -> Desk:
     vix = pd.Series(dtype=float)
     if VIX_B.exists():
         vb = pd.read_parquet(VIX_B)
-        vix = pd.Series(vb["vix"].values, index=pd.to_datetime(vb["date"]))
+        vix = pd.Series(vb["vix"].values, index=pd.to_datetime(vb["date"])).dropna()
     try:
-        live = I.yahoo("VIX", start=(vix.index.max() if len(vix) else pd.Timestamp("2018-01-01")).strftime("%Y-%m-%d"))
-        vix = pd.concat([vix, live]).groupby(level=0).last()
+        from .data import bhavcopy
+        after = vix.index.max() if len(vix) else pd.Timestamp("2018-01-01")
+        need = [d for d in bhavcopy.available_days() if after < pd.Timestamp(d) <= A]
+        if need:
+            vix = pd.concat([vix, I.vix_nse(need)]).groupby(level=0).last()
     except Exception:
-        if not len(vix):
-            notes.append("India VIX could not be fetched; volatility panels use the chain's own IV.")
+        pass
+    if not len(vix):
+        notes.append("India VIX could not be read; volatility panels use the chain's own IV.")
+    elif vix.index.max() < A:
+        notes.append(f"India VIX is through {vix.index.max():%d %b}: NSE's index file for {A:%d %b} could not be read.")
     vix = vix[vix.index <= A]
     say(75, "option chains")
     views = {}

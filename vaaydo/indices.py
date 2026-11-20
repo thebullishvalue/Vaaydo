@@ -239,7 +239,33 @@ def _safe(args):
         return [{"date": pd.Timestamp(d), "symbol": "ERR", "err": str(e)[:200]}]
 
 
+def vix_nse(days, session=None) -> pd.Series:
+    """India VIX closes for the given sessions from NSE's daily index-close file (the same file the
+    breadth panel reads). A file whose own date is not the session asked for is skipped."""
+    import io
+    import requests
+    from .breadth import IND_CLOSE, _get
+    s = session or requests.Session()
+    out = {}
+    for d in days:
+        d = pd.Timestamp(d)
+        r = _get(IND_CLOSE.format(d=d), s)
+        if r is None or not r.text.lstrip().lower().startswith("index name"):
+            continue
+        x = pd.read_csv(io.StringIO(r.text))
+        x.columns = [c.strip() for c in x.columns]
+        row = x[x["Index Name"].astype(str).str.strip().str.lower() == "india vix"]
+        if row.empty or pd.to_datetime(row["Index Date"].iloc[0], dayfirst=True, errors="coerce") != d:
+            continue
+        v = pd.to_numeric(str(row["Closing Index Value"].iloc[0]).replace(",", ""), errors="coerce")
+        if np.isfinite(v) and v > 0:
+            out[d] = float(v)
+    return pd.Series(out, dtype=float).sort_index()
+
+
 def yahoo(sym: str, start="2018-01-01") -> pd.Series:
+    """Research only (index_research, the panel build's spot hints): the live desk and the nightly
+    refresh read NSE's own files."""
     import yfinance as yf
     h = yf.Ticker(YAHOO[sym]).history(start=start, auto_adjust=False)
     s = h["Close"]

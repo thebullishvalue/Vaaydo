@@ -192,11 +192,17 @@ def refresh_index(new_days, progress=print) -> None:
         spot = P[P["symbol"] == "NIFTY"].assign(date=lambda x: pd.to_datetime(x["date"])).set_index("date")["spot"]
         BR.extend_live(raw, spot, [pd.Timestamp(d) for d in new_days]).to_parquet(br, index=False, compression="zstd")
     v = ROOT / "vix.parquet"
-    try:
-        x = I.yahoo("VIX", start="2018-01-01")
-        x.rename("vix").rename_axis("date").reset_index().to_parquet(v, index=False)
-    except Exception:
-        pass
+    try:                                         # India VIX from NSE's index-close file, appended
+        x = I.vix_nse(new_days)
+        if len(x):
+            old = pd.read_parquet(v) if v.exists() else pd.DataFrame(columns=["date", "vix"])
+            old["date"] = pd.to_datetime(old["date"])
+            new = x.rename("vix").rename_axis("date").reset_index()
+            pd.concat([old, new]).drop_duplicates("date", keep="last").sort_values("date").to_parquet(v, index=False)
+        if len(x) < len(new_days):
+            progress(f"WARNING: India VIX missing for {len(new_days) - len(x)} of {len(new_days)} new sessions")
+    except Exception as e:
+        progress(f"WARNING: India VIX not refreshed ({e})")
     progress("index desk data refreshed")
     # the holiday list drives sessions-to-expiry beyond the last file: warn while it is provisional
     hol = pd.read_csv(ROOT / "nse_holidays.csv")
