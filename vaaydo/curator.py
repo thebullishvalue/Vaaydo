@@ -44,6 +44,7 @@ class Run:
     ban: frozenset = frozenset()
     ban_next: tuple = (None, None)
     renames: dict = field(default_factory=dict)   # new symbol -> (old symbol, last session under the old name)
+    book_start: pd.Timestamp | None = None        # the book was reset: decided from this session's close, flat before
 
 
 def _sessions_up_to(asof: date | None) -> list[date]:
@@ -102,7 +103,10 @@ def _trade_return(p: LG.Position, cost: float) -> float:
     return r - 1
 
 
-def run(asof: date | None = None, progress=None) -> Run:
+def run(asof: date | None = None, progress=None, book_start: date | None = None) -> Run:
+    """book_start: reset the book. It is flat before that session; at its close it takes every name the
+    model holds (filled at the next open), and P&L, trades and stops count from there. Signals and
+    scores keep their full history; only the book restarts. Ignored if it is after the run's session."""
     notes = []
     say = progress or (lambda pct, label: None)
     say(5, "fetching nse files")
@@ -138,7 +142,17 @@ def run(asof: date | None = None, progress=None) -> Run:
         nb_date, nb = banlist.next_session(A) if asof is None or pd.Timestamp(asof) >= A else (None, None)
     except Exception:
         ban, nb_date, nb = banlist.banned(), None, None
-    led = LG.replay(M, dates, daily, ratios, fno_ban=ban)
+    b0 = None
+    if book_start is not None:
+        b0 = next((d for d in dates if d >= pd.Timestamp(book_start)), None)
+        if b0 is None:
+            notes.append(f"Book reset to {pd.Timestamp(book_start):%d %b %Y} is after this session: showing the full model book.")
+    bdates = [d for d in dates if b0 is None or d >= b0]
+    banned0 = None
+    if b0 is not None and b0 > dates[0]:
+        # stop-outs waiting to re-arm carry over: the reset book starts with exactly the model book's names
+        banned0 = LG.replay(M, [d for d in dates if d < b0], daily, ratios, fno_ban=ban).banned
+    led = LG.replay(M, bdates, daily, ratios, fno_ban=ban, banned0=banned0)
     if nb:
         for s_, (act, why) in list(led.decisions.items()):
             if act == "ENTER" and s_ in nb:
@@ -241,7 +255,7 @@ def run(asof: date | None = None, progress=None) -> Run:
             stopped[p.symbol] = dict(side="LONG" if p.side > 0 else "SHORT", stopped_on=d.date())
     screen["stopped_side"] = screen["symbol"].map(lambda x: stopped.get(x, {}).get("side"))
     screen["stopped_on"] = screen["symbol"].map(lambda x: stopped.get(x, {}).get("stopped_on"))
-    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ratios, dates, notes, ban, (nb_date, nb), ren_last)
+    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ratios, bdates, notes, ban, (nb_date, nb), ren_last, b0)
 
 
 def _roll_plan(M, A, s, contract) -> tuple:

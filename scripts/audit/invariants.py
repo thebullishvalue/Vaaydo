@@ -10,9 +10,10 @@ r = curator.run(); A = r.asof; M = r.market
 pos, legs, scr = r.positions, r.legs, r.screen
 
 # ── 1. rupee reconciliation: ledger legs vs simulator, Jul 2024 -> A, before costs ──
-F = pd.read_parquet(bundle.FUT); F['date'] = pd.to_datetime(F.date)
+# the same sessions the run used: the bundle plus any session fetched after it
+F = curator._bundle_futures(A); F['date'] = pd.to_datetime(F.date)
 ren = RN.detect(F); F = RN.apply(F, ren, keys=('date', 'expiry'))
-PR = RN.apply(pd.read_parquet(bundle.PRG), ren); PR['date'] = pd.to_datetime(PR.date)
+PR = RN.apply(curator._bundle_pragyam(sorted(set(r.scores.symbol)), A), ren); PR['date'] = pd.to_datetime(PR.date)
 st = PR.rename(columns={'stopL_r': 'stopL', 'stopS_r': 'stopS'})[['date', 'symbol', 'stopL', 'stopS']].sort_values(['symbol', 'date'])
 st[['stopL', 'stopS']] = st.groupby('symbol')[['stopL', 'stopS']].ffill(limit=5)
 R = B.simulate(r.scores[['date', 'symbol', 'score']], B.Prices(F), enter=0.05, stay=0.15, stops=st, stop_mult=1.5, trail=True,
@@ -78,6 +79,20 @@ if len(pr):
 Bd = dk.breadth
 check('breadth: advances + declines <= stocks traded, ratio > 0', ((Bd.ADV + Bd.DEC) < 4000).all() and (Bd.AD_RATIO > 0).all())
 check('index desk as-of == last session in panel', dk.asof == dk.panel.date.max())
+# ── reset book: flat before the reset, same names as the full book after it, nothing counted earlier ──
+b_req = pd.Timestamp(r.dates[-25]).date()
+rb = curator.run(A.date(), book_start=b_req)
+after = lambda x: {(a, b) for a, b, c in zip(x.positions.symbol, x.positions.side, x.positions.action) if c != 'EXIT'}
+# after the reset the two books share signals but not stops (each trails from its own entries), so they can
+# differ by a stop-out or two; report it, and require they stay close
+dif = after(rb) ^ after(r)
+check('reset: stays within a few names of the full-history book (stops trail from its own entries)',
+      len(dif) <= max(4, len(after(r)) // 5), f'differs by {sorted(dif)}')
+check('reset: no trade entered before the reset', rb.trades.empty or (pd.to_datetime(rb.trades.entry) > rb.book_start).all())
+check('reset: every leg filled after the reset', rb.legs.empty or (pd.to_datetime(rb.legs.entry_date) > rb.book_start).all())
+r0 = curator.run(A.date(), book_start=A.date())
+check('reset at the run date: every model name is an entry, nothing else', set(r0.positions.action) <= {'ENTER'}
+      and {(a, b) for a, b in zip(r0.positions.symbol, r0.positions.side)} == after(r))
 print('\nINVARIANTS', sum(ok for _, ok in P_), 'of', len(P_), 'hold')
 
 # ── 6. index desk as-of fidelity ──

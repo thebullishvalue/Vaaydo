@@ -31,6 +31,26 @@ if "theme" not in st.session_state:
     st.session_state["theme"] = "dark"
 inject_css(theme=st.session_state["theme"])
 TRACK = "data/track_record.parquet"
+BOOK_DEFAULT = "data/book.json"          # optional committed default: {"start": "YYYY-MM-DD"} (scripts/reset_book.py)
+
+
+def book_setting() -> tuple:
+    """(start date or None, where it came from). The page link (?book=YYYY-MM-DD, or ?book=full) wins
+    over the committed default, so a reset survives a reload or a bookmark."""
+    q = st.query_params.get("book")
+    if q == "full":
+        return None, "link"
+    if q:
+        try:
+            return date.fromisoformat(q), "link"
+        except ValueError:
+            pass
+    try:
+        import json
+        with open(BOOK_DEFAULT) as f:
+            return date.fromisoformat(json.load(f)["start"]), "default"
+    except Exception:
+        return None, None
 TRACK_BOOKS = (("one_lot", "One lot of every name (what VAAYDO trades)"), ("equal_rupees", "Equal rupees in every name (research)"))
 
 
@@ -118,6 +138,8 @@ with st.sidebar:
                              label_visibility="collapsed")
     run_clicked = st.button(("RUN DESK" if kind == INDICES else "RUN SCREENER") if mode == "Single Date" else "RUN HARVEST",
                             type="primary", width="stretch")
+    book_start, book_src = book_setting()
+    session_box = st.container()     # Refresh / Reset book, filled once the run below is known
     st.markdown('<div class="sidebar-title">Appearance</div>', unsafe_allow_html=True)
     look = st.radio("Appearance", ["Slate", "Paper"], index=0 if st.session_state["theme"] == "dark" else 1,
                     horizontal=True, key="sb_theme", label_visibility="collapsed")
@@ -128,8 +150,18 @@ with st.sidebar:
 
 
 @st.cache_resource(show_spinner=False, ttl=3600, max_entries=6)
-def cached_run(asof_key: str, day_key: str):
-    return curator.run(None if asof_key == "latest" else date.fromisoformat(asof_key))
+def cached_run(asof_key: str, day_key: str, book_key: str = ""):
+    return curator.run(None if asof_key == "latest" else date.fromisoformat(asof_key),
+                       book_start=date.fromisoformat(book_key) if book_key else None)
+
+
+def clear_caches() -> None:
+    """Everything a refresh must re-read: the runs, the ban list, index lists, the holiday list."""
+    from vaaydo import banlist, nse_calendar, universe
+    cached_run.clear()
+    cached_desk.clear()
+    for f in (banlist.banned, nse_calendar.listed, universe.constituents):
+        f.cache_clear()
 
 
 @st.cache_resource(show_spinner=False, ttl=3600, max_entries=4)
@@ -149,6 +181,28 @@ def uni_filter(df: pd.DataFrame, members) -> pd.DataFrame:
 
 
 # ── run ─────────────────────────────────────────────────────────────────────
+refresh = st.session_state.pop("_refresh", False)
+prev_asof = None
+if refresh:
+    # same settings as the run on screen; a refresh (not a reset) re-reads everything first
+    if refresh is True:
+        clear_caches()
+    if st.session_state.get("view") == INDICES and st.session_state.get("desk") is not None:
+        m0 = st.session_state.get("desk_meta", {})
+        kind = INDICES
+        prev_asof = getattr(st.session_state["desk"], "asof", None)
+    elif st.session_state.get("run") is not None:
+        m0 = st.session_state.get("run_meta", {})
+        kind = STOCKS
+        universe = m0.get("universe", universe)
+        prev_asof = st.session_state["run"].asof
+    else:
+        m0 = {}
+    mode, start, asof = m0.get("mode", mode), m0.get("start", start), m0.get("asof", asof)
+    if refresh is True and mode == "Single Date" and asof is not None and asof >= today - timedelta(days=1):
+        asof = today                       # "latest": pick up a session published since
+    run_clicked = True
+book_key = book_start.isoformat() if (book_start and mode == "Single Date") else ""
 if run_clicked and kind == INDICES:
     slot = st.empty()
     key = "latest" if asof >= today else asof.isoformat()
@@ -160,6 +214,8 @@ if run_clicked and kind == INDICES:
         st.session_state["view"] = INDICES
         st.session_state["desk_meta"] = dict(mode=mode, start=start, asof=asof)
         st.session_state["run_error"] = None
+        if refresh is True:
+            st.session_state["_refreshed"] = (prev_asof, getattr(dk, "asof", None))
     except Exception as e:
         st.session_state["run_error"] = str(e)
     slot.empty()
@@ -168,17 +224,52 @@ elif run_clicked:
     key = "latest" if asof >= today else asof.isoformat()
     try:
         progress_bar(slot, 3, "loading the bundle")
-        r = cached_run(key, datetime.now().strftime("%Y-%m-%d %H")) if key == "latest" else None
+        r = cached_run(key, datetime.now().strftime("%Y-%m-%d %H"), book_key) if key == "latest" else None
         if r is None:
-            r = curator.run(asof, progress=lambda p, label: progress_bar(slot, p, label))
+            r = curator.run(asof, progress=lambda p, label: progress_bar(slot, p, label),
+                            book_start=date.fromisoformat(book_key) if book_key else None)
         progress_bar(slot, 100, "analysis complete")
         st.session_state["run"] = r
         st.session_state["run_meta"] = dict(universe=universe, mode=mode, start=start, asof=asof)
         st.session_state["view"] = STOCKS
         st.session_state["run_error"] = None
+        if refresh is True:
+            st.session_state["_refreshed"] = (prev_asof, r.asof)
     except Exception as e:
         st.session_state["run_error"] = str(e)
     slot.empty()
+
+def _set_refresh(v=True) -> None:
+    st.session_state["_refresh"] = v
+
+
+def _set_book(v: str) -> None:
+    st.query_params["book"] = v
+    st.session_state["_refresh"] = "reset"
+
+
+if st.session_state.get("run") is not None or st.session_state.get("desk") is not None:
+    with session_box:
+        st.markdown('<div class="sidebar-title">Session</div>', unsafe_allow_html=True)
+        st.button("Refresh data", type="secondary", width="stretch", on_click=_set_refresh,
+                  help="Look for NSE sessions published since this run (the evening file lands around 18:00 IST), "
+                       "re-read the F&O ban list and index lists, and run again with the same settings.")
+        if kind == STOCKS and mode == "Single Date":
+            with st.popover("Reset book", width="stretch",
+                            help="Start the book afresh from a session's close: P&L, trades and stops count from there."):
+                last = st.session_state["run"].asof.date() if st.session_state.get("run") is not None else today
+                st.markdown(f"**Now:** {'book counted from the close of ' + format(book_start, '%d %b %Y') if book_start else 'full model history (since Jul 2024)'}"
+                            + (" · saved in this page's link" if book_src == "link" and book_start else "")
+                            + (" · the app's default" if book_src == "default" else ""))
+                rd = st.date_input("Start the book at the close of", min(book_start or last, last),
+                                   min_value=date(2024, 7, 15), max_value=last, key="sb_reset")
+                st.caption("At that close the book takes every name the model holds (one lot each, filled at the next "
+                           "open), keeping stopped-out names out until they re-arm. Signals keep their full history; stops trail from "
+                           "the new entries, so later stop-outs can differ from the full-history book.")
+                c1, c2 = st.columns(2)
+                c1.button("Reset", type="primary", width="stretch", on_click=_set_book, args=(rd.isoformat(),))
+                c2.button("Full history", width="stretch", disabled=book_start is None, on_click=_set_book, args=("full",))
+
 
 r: curator.Run | None = st.session_state.get("run")
 meta = st.session_state.get("run_meta", {})
@@ -255,8 +346,22 @@ def footer():
 if st.session_state.get("run_error"):
     ui.render_empty_state("The run could not complete", html.escape(st.session_state["run_error"]),
                           eyebrow="Run failed", action_label="Try another date, or run again in a minute")
+
+
+def refreshed_notice() -> list:
+    rf = st.session_state.pop("_refreshed", None)
+    if not rf:
+        return []
+    was, now = rf
+    if was is not None and now is not None and pd.Timestamp(now) > pd.Timestamp(was):
+        return [dict(kind="info", title="Refreshed", body=f"New NSE session: {pd.Timestamp(now):%d %b %Y} (was {pd.Timestamp(was):%d %b %Y}).")]
+    return [dict(kind="info", title="Refreshed", body=f"No newer NSE session than {pd.Timestamp(now):%d %b %Y} yet "
+                 "(the evening file lands around 18:00 IST); the ban list and index lists were re-read.")]
+
+
 view = st.session_state.get("view")
 if view == INDICES and st.session_state.get("desk") is not None:
+    ui.render_notice_rail(refreshed_notice())
     desk_view.render(st.session_state["desk"], st.session_state.get("desk_meta", {}))
     footer()
     st.stop()
@@ -290,8 +395,17 @@ else:
                                   ("Tonight's orders", f"{len(new_l)} buy · {len(new_s)} sell · "
                                                        f"{int((book_pos['action'] == 'EXIT').sum()) if len(book_pos) else 0} exit"),
                                   ("Book after next open", f"{int((held['side'] == 'LONG').sum()) if len(held) else 0} L · "
-                                                           f"{int((held['side'] == 'SHORT').sum()) if len(held) else 0} S")])
-notices = []
+                                                           f"{int((held['side'] == 'SHORT').sum()) if len(held) else 0} S")]
+                                 + ([("Book since", f"{r.book_start:%d %b %y} close")] if getattr(r, "book_start", None) is not None else []))
+notices = refreshed_notice()
+B0 = getattr(r, "book_start", None) if not RANGE else None
+if B0 is not None:
+    where = ("saved in this page's link: bookmark it to keep it" if book_src == "link"
+             else "the app's default (data/book.json)")
+    notices.append(dict(kind="info", title=f"Book reset to the {B0:%d %b %Y} close",
+                        body=("Tonight's orders take the whole model book: every name it holds, one lot each, at the next open. "
+                              if B0 == r.asof else "Positions, P&L, closed trades and stops count from that close. ")
+                             + f"Signals and scores keep their full history. {where.capitalize()}; Reset book in the rail to change it."))
 if not RANGE and meta.get("asof") and pd.Timestamp(meta["asof"]) > r.asof:
     notices.append(dict(kind="info", title="Latest published session",
                         body=f"NSE's file for {meta['asof']:%d %b} is not out yet (it publishes around 18:00 IST); "
@@ -571,6 +685,20 @@ if meta.get("mode") == "Single Date":
                  subtext="lost from today's close if every stop hit"),
             dict(label="Margin (rough)", value=inr((gl + gs) * 0.2), subtext="≈ 20% of notional; your broker's SPAN differs"),
         ], key="book-kpis")
+        if B0 is not None:
+            trb = uni_filter(r.trades, members)
+            real = float(trb["pnl_rs"].sum()) if len(trb) else 0.0
+            opn = float(book_pos["pnl"].sum()) if len(book_pos) else 0.0
+            ui.render_kpi_strip([
+                dict(label=f"Book since {B0:%d %b %y}", value=inr(real + opn, True),
+                     subtext="realised plus open", color_class="success" if real + opn >= 0 else "danger"),
+                dict(label="Realised", value=inr(real, True), subtext=f"{len(trb)} trade(s) closed, after charges"),
+                dict(label="Open", value=inr(opn, True),
+                     subtext=f"every position at today's close, including {int((book_pos['action'] == 'EXIT').sum()) if len(book_pos) else 0} "
+                             "exiting at the next open; before charges"),
+                dict(label="Won", value=pct((trb["ret"] > 0).mean(), False, 0) if len(trb) else "—",
+                     subtext="of trades closed since the reset"),
+            ], max_cols=4, key="book-since")
         ui.render_section_header("Positions after the next open", "Held positions plus tomorrow's entries, one lot each. "
                                  "Pick one below to see every contract leg it has been held in.", icon="layers")
         if len(held):
@@ -713,7 +841,7 @@ if meta.get("mode") == "Single Date":
             summ.append({"Book": nm, "Sharpe": round(sr(x), 2), "Return / yr": pct(x.mean() * 252), "Volatility": pct(x.std() * np.sqrt(252), False),
                          "Worst drawdown": pct((eq / eq.cummax() - 1).min()), "Losing years": f"{int((yrs < 0).sum())} of {len(yrs)}"})
         ui.render_data_table(pd.DataFrame(summ), show_index=False, label_col="Book")
-        ui.render_section_header("Every closed trade since July 2024", "One lot each, from the same engine as tonight's orders, "
+        ui.render_section_header(f"Every closed trade since {'the ' + format(B0, '%d %b %Y') + ' reset' if B0 is not None else 'July 2024'}", "One lot each, from the same engine as tonight's orders, "
                                  "after charges and slippage. Open positions are on the Book tab.", icon="list")
         tr = uni_filter(r.trades, members)
         if len(tr):
@@ -750,6 +878,13 @@ if meta.get("mode") == "Single Date":
             "Leaving F&O": "if NSE lists no next contract when a roll falls due, the position closes at that close",
             "Stop with no Pragyam level": "the last level within 5 sessions, else the day's median stop distance",
             "Book after next open": "positions kept plus tomorrow's new entries; exits leave at that open",
+            "Reset book": "the book starts flat at a session's close and takes every name the model holds (one lot each, "
+                          "at the next open); stopped-out names stay out until they re-arm, so it starts with the same names as "
+                          "the full-history book; its stops trail from its own entries, so later stop-outs can differ. "
+                          "P&L, trades and stops count from there; signals keep their history. "
+                          "Saved in the page link (?book=YYYY-MM-DD); scripts/reset_book.py sets the app's default",
+            "Refresh data": "looks for NSE sessions published since the run, re-reads the ban list and index lists, "
+                            "and runs again with the same settings",
         }, header_left="Term", header_right="Meaning")
 
 # ── Historical Range ────────────────────────────────────────────────────────

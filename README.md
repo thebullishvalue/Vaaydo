@@ -36,6 +36,13 @@ in which contract, at what price, with a stop.
 | **Screen** | Every F&O stock with every reading: score, put/call ratios, skews, IV, event flag, OI walls, build-up, delivery %, Pragyam regime. |
 | **System Data** | Track record 2019 – today, every closed trade since Jul 2024, exports, definitions. |
 
+**Refresh data** (rail, after a run) picks up an NSE session published since, re-reads the ban
+list, and runs again with the same settings. **Reset book** starts the book at a session's close:
+it takes every name the model holds at the next open, and P&L, trades and stops count from there
+(signals keep their history; its stops trail from the new entries, so later stop-outs can differ
+from the full-history book by a name or two). The reset is saved in the page link (`?book=2026-11-20`; bookmark it);
+`python scripts/reset_book.py <date>` makes it the app's default for every visitor.
+
 **Historical Range** mode returns every closed trade whose signal fell in the range,
 month by month, and the track record over it. There is no capital sizing: every
 position is one lot of its futures contract, and the book is the whole model book.
