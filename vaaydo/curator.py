@@ -44,6 +44,7 @@ class Run:
     ban: frozenset = frozenset()
     ban_next: tuple = (None, None)
     renames: dict = field(default_factory=dict)   # new symbol -> (old symbol, last session under the old name)
+    levels: str = ""                              # where the newest Pragyam levels came from
     book_start: pd.Timestamp | None = None        # the book was reset: decided from this session's close, flat before
 
 
@@ -71,16 +72,42 @@ def _bundle_futures(last_needed: pd.Timestamp) -> pd.DataFrame:
     return F[F["date"] <= last_needed]
 
 
-def _bundle_pragyam(symbols, asof: pd.Timestamp) -> pd.DataFrame:
+def _bundle_pragyam(symbols, asof: pd.Timestamp) -> tuple[pd.DataFrame, str, bool]:
+    """Pragyam levels to `asof`: the bundle's, and for sessions after it, computed from the shipped
+    price history plus NSE's own bars for those sessions (Yahoo only if the shipped history is
+    missing). `symbols`: the stocks that need a level (in F&O at `asof`).
+    Returns (levels, a line saying where the newest levels came from, whether that line is a warning)."""
+    from .data import history
     P = pd.read_parquet(bundle.PRG)
     P["date"] = pd.to_datetime(P["date"])
-    if P["date"].max() < asof:                                  # sessions after the bundle: compute them
-        try:
-            newp = bundle.pragyam_rows(sorted(symbols), P["date"].max() + pd.Timedelta(days=1), until=asof)
-            P = pd.concat([P, newp], ignore_index=True)
-        except Exception:
-            pass
-    return P[P["date"] <= asof]
+    end = P["date"].max()
+    if end >= asof:
+        return P[P["date"] <= asof], f"through {asof:%d %b %Y} from the bundle", False
+    want = sorted(symbols)
+    how = "shipped price history + NSE bars"
+    try:
+        if bundle.HIST.exists():
+            h = pd.read_parquet(bundle.HIST)
+            h["date"] = pd.to_datetime(h["date"])
+            h = h[h["symbol"].isin(want)]
+            gap = len(pd.bdate_range(h["date"].max() + pd.Timedelta(days=1), asof)) + 2
+            h = history.fill_from_nse(h, want, asof, lookback=max(10, gap))
+        else:
+            h, how = history.load(want, until=asof), "Yahoo history + NSE bars"
+        newp = bundle.pragyam_rows(want, end + pd.Timedelta(days=1), until=asof, history_df=h)
+        err = ""
+    except Exception as e:                       # never lose the run: the last level carries (within 5 sessions)
+        newp, err = pd.DataFrame(), f"{type(e).__name__}: {e}"
+    if len(newp):
+        P = pd.concat([P, newp], ignore_index=True)
+    got = set(newp.loc[pd.to_datetime(newp["date"]) == asof, "symbol"]) if len(newp) else set()
+    lost = sorted(set(want) - got)
+    if not lost:
+        return P[P["date"] <= asof], f"bundle to {end:%d %b}, {asof:%d %b} computed ({how})", False
+    head = (f"{asof:%d %b %Y} levels could not be computed ({err or 'no price bar'})" if not got else
+            f"{asof:%d %b %Y} levels missing for {len(lost)} of {len(want)} stocks ({', '.join(lost[:8])}"
+            f"{' …' if len(lost) > 8 else ''})")
+    return P[P["date"] <= asof], f"{head}: their stops and ranges carry the {end:%d %b} levels", True
 
 
 def _trade_rupees(p: LG.Position, cost: float) -> float:
@@ -123,12 +150,20 @@ def run(asof: date | None = None, progress=None, book_start: date | None = None)
     sc = sc[sc["date"] <= A]
     daily: dict = {}
     signal.replay(sc, daily=daily)
-    say(45, "replaying the book")
     M = LG.Market(F)
     cal = set(M.cal)
     dates = [d for d in sorted(daily) if d in cal]
-    names = sorted(set(sc["symbol"]))
-    P = RN.apply(_bundle_pragyam(names, A), ren)
+    say(40, "pragyam levels")
+    live = set(F.loc[F["date"] == A, "symbol"])          # in F&O today (current names): the only ones that need a level
+    P, levels_from, levels_warn = _bundle_pragyam(live, A)
+    P = RN.apply(P, ren)
+    if levels_warn:
+        notes.append("Stop levels: " + levels_from + ".")
+        try:
+            from .logger_config import console
+            console.warning(levels_from)
+        except Exception:
+            pass
     ratios = {}
     med = P.groupby("date")[["stopL_r", "stopS_r"]].median()
     ratios[("*", 1)], ratios[("*", -1)] = med["stopL_r"], med["stopS_r"]   # fallback: the day's median distance
@@ -136,12 +171,13 @@ def run(asof: date | None = None, progress=None, book_start: date | None = None)
         g = g.set_index("date")
         # a missing day's level falls back to the last one within 5 sessions (never a position without a stop)
         ratios[(s, 1)], ratios[(s, -1)] = g["stopL_r"].ffill(limit=5), g["stopS_r"].ffill(limit=5)
-    say(55, "checking the F&O ban list")
+    say(50, "checking the F&O ban list")
     try:
         ban = frozenset((d, ren.get(x, x)) for d, x in banlist.live(dates))
         nb_date, nb = banlist.next_session(A) if asof is None or pd.Timestamp(asof) >= A else (None, None)
     except Exception:
         ban, nb_date, nb = banlist.banned(), None, None
+    say(55, "replaying the book")
     b0 = None
     if book_start is not None:
         b0 = next((d for d in dates if d >= pd.Timestamp(book_start)), None)
@@ -255,7 +291,7 @@ def run(asof: date | None = None, progress=None, book_start: date | None = None)
             stopped[p.symbol] = dict(side="LONG" if p.side > 0 else "SHORT", stopped_on=d.date())
     screen["stopped_side"] = screen["symbol"].map(lambda x: stopped.get(x, {}).get("side"))
     screen["stopped_on"] = screen["symbol"].map(lambda x: stopped.get(x, {}).get("stopped_on"))
-    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ratios, bdates, notes, ban, (nb_date, nb), ren_last, b0)
+    return Run(A, screen, positions, legs, pd.DataFrame(trades), cf, sc, M, daily, ratios, bdates, notes, ban, (nb_date, nb), ren_last, levels=levels_from, book_start=b0)
 
 
 def _roll_plan(M, A, s, contract) -> tuple:

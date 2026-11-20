@@ -24,7 +24,7 @@ from vaaydo.logger_config import console, capture_library_output, route_logging
 import ui.desk as desk_view
 from vaaydo.universe import UNIVERSES, constituents
 
-VERSION = "7.3.8"
+VERSION = "7.4.0"
 STOCKS, INDICES = "F&O Stocks", "Indices · NIFTY & BANKNIFTY"
 st.set_page_config(page_title="VAAYDO | F&O Trade Screener", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
@@ -236,6 +236,7 @@ _STEPS = {
     "loading the bundle":        ("Loading the Bundle", "data/ · sessions since Jul 2024"),
     "fetching nse files":        ("Fetching NSE Files", "F&O bhavcopy · the sessions the bundle lacks"),
     "scoring positioning":       ("Scoring Positioning", "option positioning · every F&O stock"),
+    "pragyam levels":            ("Pragyam Levels", "stops and ranges · sessions after the bundle, from NSE bars"),
     "replaying the book":        ("Replaying the Book", "fills, rolls, stops · one lot each"),
     "checking the f&o ban list": ("Checking the F&O Ban List", "NSE market-wide position limit"),
     "reading option flow":       ("Reading Option Flow", "contract flow against the session before · per-stock screen"),
@@ -291,11 +292,18 @@ def _run_card(r) -> tuple[dict, list]:
     act = p["action"].value_counts() if len(p) and "action" in p else pd.Series(dtype=int)
     ready = int(sc["state"].isin(["READY ▲", "READY ▼"]).sum()) if len(sc) and "state" in sc else 0
     nb_date, nb = r.ban_next
+    held_ = p[p["action"] != "EXIT"] if len(p) and "action" in p else p
+    rolls = held_["roll_on"].dropna() if len(held_) and "roll_on" in held_ else pd.Series(dtype=object)
+    nxt = rolls.min() if len(rolls) else None
+    b0 = getattr(r, "book_start", None)
     return ({"As of": f"{r.asof:%Y-%m-%d}", "Screened": f"{len(sc)} F&O stocks",
-             "Orders": f"{int(act.get('ENTER', 0))} enter · {int(act.get('EXIT', 0))} exit",
-             "Book": f"{int((p['action'] != 'EXIT').sum()) if len(p) else 0} positions after the next open",
+             "Orders": f"{int(act.get('ENTER', 0))} enter · {int(act.get('EXIT', 0))} exit at the next open",
+             **({"Next roll": f"{int((rolls == nxt).sum())} position{'s' * (int((rolls == nxt).sum()) != 1)} at the "
+                              f"{pd.Timestamp(nxt):%Y-%m-%d} close"} if nxt is not None else {}),
+             "Book": f"{len(held_)} positions after the next open" + (f" (since the {b0:%Y-%m-%d} close)" if b0 is not None else ""),
+             "Stop levels": getattr(r, "levels", "") or "—",
              "Watchlist": f"{ready} near an entry", "Option contracts": f"{len(r.contracts):,}",
-             "Closed trades": f"{len(r.trades):,} since the bundle start",
+             "Closed trades": f"{len(r.trades):,} since " + (f"the {b0:%Y-%m-%d} reset" if b0 is not None else "Jul 2024"),
              **({"F&O ban": f"{len(nb or [])} name{'s' * (len(nb or []) != 1)} for {nb_date:%Y-%m-%d}"} if nb_date else {}),
              **({"Renamed": ", ".join(f"{o} → {n}" for n, (o, _) in r.renames.items())} if r.renames else {})},
             list(r.notes))

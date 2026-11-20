@@ -11,6 +11,33 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.4.0] — 2026-11-20 — *Refresh, reset, and stops without Yahoo*
+### Added
+- **Refresh data** (rail, after a run): looks for NSE sessions published since the run, re-reads the
+  F&O ban list, index lists and holiday list, and runs again with the same settings; a notice says
+  whether a newer session arrived.
+- **Reset book** (rail, F&O Stocks, Single Date): the book starts flat at a chosen session's close and
+  takes every name the model holds at the next open; P&L, closed trades and stops count from there,
+  signals keep their history. Stopped-out names waiting to re-arm stay out. Saved in the page link
+  (`?book=YYYY-MM-DD`); `scripts/reset_book.py` sets the app's default (`data/book.json`).
+- **`data/history.parquet`**: the daily OHLC Pragyam's levels are computed from (stocks in F&O, from
+  Nov 2019), written by the nightly refresh from the same frame it computes the levels with.
+### Fixed
+- **Stops for a session after the bundle no longer depend on Yahoo.** Between NSE's evening file
+  (~18:00 IST) and the nightly refresh, a run computed that session's Pragyam levels by downloading
+  ten years of Yahoo history for every symbol ever scored: a minute on a fresh container, and on
+  Streamlit Cloud Yahoo often refused (HTTP 429 / 401). The refusal was swallowed and the previous
+  session's levels carried silently under "✓ done". Levels now come from the shipped history plus
+  NSE's own bar for the session (about 11 s, no Yahoo), for the stocks in F&O that day only.
+- **A level that cannot be computed is said**: a warning in the run log, a note on the screen, and a
+  "Stop levels" line in the result card naming the session whose levels carry.
+### Changed
+- The run log has its own **Pragyam Levels** step (the time it took was reported under "Replaying the
+  Book"). The result card says "Closed trades … since Jul 2024" (or since the reset), "Orders … at the
+  next open", and a separate "Next roll" line.
+
+---
+
 ## [7.3.8] — 2026-11-19 — *The appearance switch at the foot*
 ### Changed
 - **The appearance switch sits at the foot on every screen.** Streamlit ends the rail with 96px of

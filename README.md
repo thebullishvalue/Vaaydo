@@ -108,7 +108,8 @@ streamlit run app.py
 ```
 
 `data/` ships the inputs since Jul 2024 (option-positioning inputs, futures prices,
-Pragyam levels, sectors) so a run takes seconds. `.github/workflows/refresh.yml` appends
+Pragyam levels and the price history they are computed from, sectors) so a run takes seconds; a
+session NSE published after the bundle is computed from NSE's own files, with no call to Yahoo. `.github/workflows/refresh.yml` appends
 each evening's session (`scripts/refresh_bundle.py`); without it, the app fetches
 missing days itself.
 

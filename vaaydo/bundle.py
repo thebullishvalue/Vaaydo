@@ -26,6 +26,16 @@ PRG = ROOT / "pragyam.parquet"
 SECT = ROOT / "sectors.parquet"
 INPUTS = ROOT / "opi_inputs.parquet"
 PRAGYAM_ANCHOR = START - pd.Timedelta(days=1700)      # 11 Nov 2019: the warm-up start of the shipped levels
+HIST = ROOT / "history.parquet"     # daily OHLC of the stocks in F&O, from PRAGYAM_ANCHOR: what Pragyam runs on
+
+
+def write_history(h: pd.DataFrame, symbols) -> None:
+    """Ship the price history Pragyam's levels were computed from, so a live run computes the
+    sessions after the bundle from it plus NSE's own bars, with no call to Yahoo."""
+    x = h[h["symbol"].isin(set(symbols))].copy()
+    x["date"] = pd.to_datetime(x["date"])
+    x = x[x["date"] >= PRAGYAM_ANCHOR][["date", "symbol", "open", "high", "low", "close"]]
+    x.sort_values(["symbol", "date"]).to_parquet(HIST, index=False, compression="zstd")
 
 
 def futures_rows(days) -> pd.DataFrame:
@@ -131,6 +141,7 @@ def refresh(progress=print) -> None:
     from .data import history
     h = history.load(syms, refresh=True, until=new_days[-1])         # lagging Yahoo bars filled from NSE
     newp = pragyam_rows(syms, pd.Timestamp(new_days[0]), until=pd.Timestamp(new_days[-1]), history_df=h)
+    write_history(h, syms)
     have = set(newp.loc[pd.to_datetime(newp["date"]) == pd.Timestamp(new_days[-1]), "symbol"]) if len(newp) else set()
     lost = sorted(set(syms) - have)
     if lost:

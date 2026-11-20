@@ -13,7 +13,7 @@ pos, legs, scr = r.positions, r.legs, r.screen
 # the same sessions the run used: the bundle plus any session fetched after it
 F = curator._bundle_futures(A); F['date'] = pd.to_datetime(F.date)
 ren = RN.detect(F); F = RN.apply(F, ren, keys=('date', 'expiry'))
-PR = RN.apply(curator._bundle_pragyam(sorted(set(r.scores.symbol)), A), ren); PR['date'] = pd.to_datetime(PR.date)
+PR = RN.apply(curator._bundle_pragyam(set(F.loc[F.date == A, 'symbol']), A)[0], ren); PR['date'] = pd.to_datetime(PR.date)
 st = PR.rename(columns={'stopL_r': 'stopL', 'stopS_r': 'stopS'})[['date', 'symbol', 'stopL', 'stopS']].sort_values(['symbol', 'date'])
 st[['stopL', 'stopS']] = st.groupby('symbol')[['stopL', 'stopS']].ffill(limit=5)
 R = B.simulate(r.scores[['date', 'symbol', 'score']], B.Prices(F), enter=0.05, stay=0.15, stops=st, stop_mult=1.5, trail=True,
