@@ -609,7 +609,8 @@ RUN_PHASES = (
     # the screener
     (1, "Data",           ("loading the bundle", "fetching nse files")),
     (2, "Positioning",    ("scoring positioning",)),
-    (3, "Book & Flow",    ("replaying the book", "checking the f&o ban list", "reading option flow")),
+    (3, "Book & Flow",    ("pragyam levels", "checking the f&o ban list", "replaying the book",
+                           "reading option flow")),
     (4, "Final Assembly", ("assembling the screen", "analysis complete")),
     # the index desk: the same four phases, named for its work
     (1, "Data",           ("reading the index chains", "loading index history", "reading new sessions")),

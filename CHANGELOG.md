@@ -11,6 +11,25 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.4.2] — 2026-11-20 — *Pragyam Levels in its phase; one box per tooltip*
+### Fixed
+- **The progress card puts Pragyam Levels in Book & Flow.** 7.4.0 gave the levels their own run step
+  but not a place in the card's phase table, so the card fell back to the step's percentage and
+  showed it under Positioning ("Phase 2 of 4"). The levels are the stops and ranges the book replays
+  with: the step now reads "Phase 3 of 4 · Book & Flow", ahead of the ban list and the replay. The
+  phase table and the step table list the steps in the order the run takes them (the ban list
+  before the replay, as 7.4.0 reordered them).
+- **A tooltip is one box, in the family's note type.** Every `help=` tip, the rail's refresh hint
+  among them, drew a box inside a box: the tooltip rule styled the tip and the wrapper Streamlit
+  nests in it alike, so it had two borders, two shadows and its padding twice. Its words kept
+  Streamlit's own markdown type (Source Sans, 14px), so a two-sentence hint stood 250px tall in a
+  narrow column. The wrapper is plain again and the words take the 10px mono note tier the rule
+  always asked for: the same hint is one box, about half as tall, with every line inside it.
+### Docs
+- The README's version badge reads the current release (it still read 7.3.8).
+
+---
+
 ## [7.4.1] — 2026-11-20 — *Reset book withdrawn*
 ### Removed
 - **Reset book** (added in 7.4.0) is withdrawn: the rail control, the `?book=` link setting,

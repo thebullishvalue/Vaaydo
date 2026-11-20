@@ -24,7 +24,7 @@ from vaaydo.logger_config import console, capture_library_output, route_logging
 import ui.desk as desk_view
 from vaaydo.universe import UNIVERSES, constituents
 
-VERSION = "7.4.1"
+VERSION = "7.4.2"
 STOCKS, INDICES = "F&O Stocks", "Indices · NIFTY & BANKNIFTY"
 st.set_page_config(page_title="VAAYDO | F&O Trade Screener", page_icon="⚡", layout="wide",
                    initial_sidebar_state="expanded")
@@ -216,8 +216,8 @@ _STEPS = {
     "fetching nse files":        ("Fetching NSE Files", "F&O bhavcopy · the sessions the bundle lacks"),
     "scoring positioning":       ("Scoring Positioning", "option positioning · every F&O stock"),
     "pragyam levels":            ("Pragyam Levels", "stops and ranges · sessions after the bundle, from NSE bars"),
-    "replaying the book":        ("Replaying the Book", "fills, rolls, stops · one lot each"),
     "checking the f&o ban list": ("Checking the F&O Ban List", "NSE market-wide position limit"),
+    "replaying the book":        ("Replaying the Book", "fills, rolls, stops · one lot each"),
     "reading option flow":       ("Reading Option Flow", "contract flow against the session before · per-stock screen"),
     "assembling the screen":     ("Assembling the Screen", "positions · closed trades · tonight's tickets"),
     "analysis complete":         ("Analysis Complete", "tickets ready"),

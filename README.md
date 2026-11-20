@@ -6,7 +6,7 @@
 
 F&O Trade Screener · Option Positioning · Stock Futures
 
-[![Version](https://img.shields.io/badge/version-7.3.8-2B5FD9)](CHANGELOG.md) [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)](requirements.txt) [![Streamlit](https://img.shields.io/badge/streamlit-1.52.2-FF4B4B)](requirements.txt) [![License](https://img.shields.io/badge/license-proprietary-6B7280)](LICENSE) [![Pragyam Family](https://img.shields.io/badge/pragyam-family-0F1217)](#the-pragyam-family)
+[![Version](https://img.shields.io/badge/version-7.4.2-2B5FD9)](CHANGELOG.md) [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)](requirements.txt) [![Streamlit](https://img.shields.io/badge/streamlit-1.52.2-FF4B4B)](requirements.txt) [![License](https://img.shields.io/badge/license-proprietary-6B7280)](LICENSE) [![Pragyam Family](https://img.shields.io/badge/pragyam-family-0F1217)](#the-pragyam-family)
 
 </div>
 
@@ -104,10 +104,10 @@ streamlit run app.py
 ```
 
 `data/` ships the inputs since Jul 2024 (option-positioning inputs, futures prices,
-Pragyam levels and the price history they are computed from, sectors) so a run takes seconds; a
-session NSE published after the bundle is computed from NSE's own files, with no call to Yahoo. `.github/workflows/refresh.yml` appends
-each evening's session (`scripts/refresh_bundle.py`); without it, the app fetches
-missing days itself.
+Pragyam levels and the price history they are computed from, sectors) so a run takes
+seconds; a session NSE published after the bundle is computed from NSE's own files, with
+no call to Yahoo. `.github/workflows/refresh.yml` appends each evening's session
+(`scripts/refresh_bundle.py`); without it, the app fetches missing days itself.
 
 Inputs that NSE's nightly files don't carry are checked by `scripts/check_inputs.py`: the
 holiday list ahead (which sets roll dates) and the sector map. Say **panchang** in a Claude
