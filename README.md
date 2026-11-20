@@ -1,14 +1,26 @@
-# VAAYDO (वायदो)
+<div align="center">
+
+# VAAYDO
+
+**वायदो** · *a forward contract, a promise for a later date*
+
+F&O Trade Screener · Option Positioning · Stock Futures
+
+[![Version](https://img.shields.io/badge/version-7.3.8-2B5FD9)](CHANGELOG.md) [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)](requirements.txt) [![Streamlit](https://img.shields.io/badge/streamlit-1.52.2-FF4B4B)](requirements.txt) [![License](https://img.shields.io/badge/license-proprietary-6B7280)](LICENSE) [![Pragyam Family](https://img.shields.io/badge/pragyam-family-0F1217)](#the-pragyam-family)
+
+</div>
+
+> Long the stocks where the options crowd leans hardest to puts; short the ones where
+> it leans hardest to calls; one lot of each.
+
+## Overview
 
 **An F&O trade screener for NSE.** Pick a universe and a date, press Run: every NSE F&O
 stock is screened on where its options market is positioned, and the stock-futures
 trades that follow come out as tickets: what to enter, exit and hold at the next open,
 in which contract, at what price, with a stop.
 
-> Long the stocks where the options crowd leans hardest to puts; short the ones where
-> it leans hardest to calls; one lot of each.
-
-## Two universes
+### Two universes
 
 * **F&O Stocks**: the trades. Every NSE F&O stock screened on option positioning; the
   stock-futures book as tickets. Index-constituent lists filter it.
@@ -18,13 +30,13 @@ in which contract, at what price, with a stop.
   participants (FII / DII / Pro / Client), and the evidence. **It gives no index trades:**
   every index hypothesis VAAYDO registered — sixteen directional readings, trend and
   volatility-managed futures, an iron condor and an iron fly on real fills — failed on
-  2019–2026 (docs/PREREGISTRATION.md). Market breadth (NSE advance/decline, 2006 on) and
+  2019–2026 ([pre-registration](docs/PREREGISTRATION.md)). Market breadth (NSE advance/decline, 2006 on) and
   the owner's Nishkarsh standard of inference were added: combining weak readings
   without fitted weights (nearest-past-state precedent; FII stance × breadth agreement)
   passes the statistical bar, but no combination beat simply holding NIFTY in 2023–24,
   so none trades. Five candidates are tracked on paper and shown daily.
 
-## What a run returns (F&O Stocks)
+## What It Does
 
 | Tab | |
 |---|---|
@@ -40,7 +52,9 @@ in which contract, at what price, with a stop.
 month by month, and the track record over it. There is no capital sizing: every
 position is one lot of its futures contract, and the book is the whole model book.
 
-## The evidence, briefly (docs/RESEARCH_V6.md)
+## The Evidence
+
+From the [v6 research log](docs/RESEARCH_V6.md):
 
 | Book (~30 names, on gross exposure, net of costs, 2019 – Nov 2026) | Sharpe | Return / yr | Volatility | Worst drawdown | Losing years |
 |---|---|---|---|---|---|
@@ -54,7 +68,7 @@ are estimated from NSE's traded value and contracts, within 1%: NSE's file then 
 Designed on 2024–25 and confirmed on 2019–22, which no design choice had seen. Flat in
 2023 – mid-2024. Expect losing years.
 
-## How the book is kept honest
+## How the Book Is Kept Honest
 
 * Signals are decided on a session's close; fills are at the **next open**, in the
   contract that is actually active on the fill day.
@@ -68,14 +82,14 @@ Designed on 2024–25 and confirmed on 2019–22, which no design choice had see
   confirmed by the price jump, so P&L is continuous and lot revisions aren't mistaken
   for corporate actions.
 * The backtest simulator and the live ledger hold identical books (checked at 97 dates),
-  and every leg ever booked is checked against the exchange files (docs/AUDIT.md).
+  and every leg ever booked is checked against the exchange files ([audit](docs/AUDIT.md)).
 * A stock leaving F&O (no next contract listed) is closed at its due roll; a contract that
   stops printing early (merger) at its last print. A renamed stock (ZOMATO → ETERNAL and 16
   others since 2019) is one continuous position and signal. No entry and no roll during an
   F&O ban. Rolls count NSE sessions,
   holidays included, and are announced on the ticket before they happen.
 
-## Run it
+## Quick Start
 
 **Streamlit Cloud:** point the app at `app.py`.
 
@@ -97,16 +111,7 @@ session to run the update routine (`.claude/skills/panchang`); without Claude, t
 routine is `python scripts/panchang.py` (`--holidays circular.txt` loads a year's NSE holiday
 list from the circular's text; `--check-only` changes nothing).
 
-## Interface
-
-VAAYDO is a member of the Pragyam family (Tattva, Nishkarsh, Nivesa, Pragyam, Arthagati,
-Samhita, Swing, Sanket) and shares its interface: one stylesheet (`ui/theme.css`), one set
-of components (`ui/components.py`), Slate and Paper appearances. Every chart and table sits
-in a panel whose header band carries its context; numbers are right-aligned in JetBrains
-Mono, signed ones in their sign's colour; each tab opens with a titled section. Changes are
-in `CHANGELOG.md`.
-
-## Layout
+## Project Structure
 
 ```
 app.py                  the screener (Streamlit; the family's design system in ui/; ui/desk.py is the index desk)
@@ -130,8 +135,60 @@ vaaydo/
 docs/  VISION.md · METHOD.md · RESEARCH_V6.md · PREREGISTRATION.md · RESEARCH.md · AUDIT.md
 ```
 
-## Terms
+VAAYDO is a member of the Pragyam family (Tattva, Nishkarsh, Nivesa, Pragyam, Arthagati,
+Samhita, Swing, Sanket) and shares its interface: one stylesheet (`ui/theme.css`), one set
+of components (`ui/components.py`), Slate and Paper appearances. Every chart and table sits
+in a panel whose header band carries its context; numbers are right-aligned in JetBrains
+Mono, signed ones in their sign's colour; each tab opens with a titled section. Changes are
+in the [Changelog](CHANGELOG.md).
 
-Risk levels: **Pragyam** (thebullishvalue/Indicator). NSE data is subject to NSE's
-terms. Decision support, not investment advice. Futures can lose more than the margin
-posted.
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [Vision](docs/VISION.md) | What VAAYDO is for and how it is designed |
+| [Method](docs/METHOD.md) | How VAAYDO picks trades, in plain words |
+| [Research, v6](docs/RESEARCH_V6.md) | From data to a tradeable signal: the evidence behind the book |
+| [Pre-registration](docs/PREREGISTRATION.md) | The v6 hypotheses, written before any signal was computed, and their outcomes |
+| [Research log](docs/RESEARCH.md) | What the data says, Jul 2024 – Nov 2026 |
+| [Audit](docs/AUDIT.md) | The audit of the v4 pilot, and why it was rebuilt |
+| [Changelog](CHANGELOG.md) | Every release, newest first |
+
+## The Pragyam Family
+
+Nine Streamlit applications built on one design system and one set of components, so a
+panel, a table, a chart or a number reads the same in each.
+
+| Product | What it is |
+|---|---|
+| [**Tattva**](https://github.com/thebullishvalue/Tattva) | Cross-asset fair value, with a call only where its own record supports one |
+| [**Nishkarsh**](https://github.com/thebullishvalue/Nishkarsh) | Nifty 50 inference: a top-down forecast and bottom-up breadth, read as one |
+| [**Arthagati**](https://github.com/thebullishvalue/Arthagati) | Valuation-anchored market sentiment, tested on data it never saw |
+| [**Pragyam**](https://github.com/thebullishvalue/Pragyam) | Portfolio curation that spreads risk rather than predicting returns |
+| [**Sanket**](https://github.com/thebullishvalue/Sanket) | A market signal screener: what fired, what is about to, and whether it has paid |
+| **Vaaydo** · *this repository* | An F&O trade screener on option positioning, with futures tickets |
+| [**Nivesa**](https://github.com/thebullishvalue/Nivesa) | A bond portfolio ledger: cost, yield, duration and cashflows across accounts |
+| [**Samhita**](https://github.com/thebullishvalue/Samhita) | A portfolio tracker: live prices, performance and risk against the benchmark |
+| [**Swing**](https://github.com/thebullishvalue/Swing) | A portfolio tracker for the swing book, on the same engine as Samhita |
+
+## License
+
+Proprietary. © 2026 @thebullishvalue. All rights reserved. The source is visible here
+for reference only: viewing it grants no right to use, copy, modify or distribute it.
+See [LICENSE](LICENSE).
+
+VAAYDO was published under the MIT License until 20 November 2026. Copies obtained under
+that licence keep its terms; everything published since is under the proprietary licence above.
+
+## Disclaimer
+
+VAAYDO is a research and decision-support tool, not investment advice. Nothing it shows is
+a recommendation to buy or sell any security, and past or measured results do not guarantee
+future ones. Every decision made with it is your own.
+
+Risk levels: **Pragyam** (thebullishvalue/Indicator). NSE data is subject to NSE's terms.
+Futures can lose more than the margin posted.
+
+---
+
+<div align="center"><sub>© 2026 @thebullishvalue · Part of the Pragyam product family</sub></div>
