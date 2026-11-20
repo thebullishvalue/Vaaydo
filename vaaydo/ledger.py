@@ -146,13 +146,11 @@ class Ledger:
 
 
 def replay(M: Market, dates, model: dict, ratios: dict, mult: float = STOP_MULT,
-           fno_ban: frozenset | None = None, banned0: dict | None = None) -> Ledger:
+           fno_ban: frozenset | None = None) -> Ledger:
     """dates: decision sessions, ascending. model: {date: {symbol: side}}. ratios:
-    {(symbol, side): Series} Pragyam stop ratio. The model book, one lot of every name.
-    banned0: names already stopped out and waiting to re-arm when the replay starts (a reset book
-    inherits them, so it starts with exactly the names the model book holds)."""
+    {(symbol, side): Series} Pragyam stop ratio. The model book, one lot of every name."""
     held: dict[str, Position] = {}
-    banned: dict[str, int] = dict(banned0 or {})
+    banned: dict[str, int] = {}
     led = Ledger()
     for i, d in enumerate(dates):
         terminated: dict[str, bool] = {}

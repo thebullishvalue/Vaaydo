@@ -11,6 +11,16 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.4.1] — 2026-11-20 — *Reset book withdrawn*
+### Removed
+- **Reset book** (added in 7.4.0) is withdrawn: the rail control, the `?book=` link setting,
+  `scripts/reset_book.py` and `data/book.json`, the "Book since" line and Book-tab summary, and the
+  ledger's start-date hook. The book is again the one model book since Jul 2024. Everything else in
+  7.4.0 stays: Refresh data, stops without Yahoo, reported carried levels, India VIX from NSE, and
+  the run-log changes.
+
+---
+
 ## [7.4.0] — 2026-11-20 — *Refresh, reset, and stops without Yahoo*
 ### Added
 - **Refresh data** (rail, after a run): looks for NSE sessions published since the run, re-reads the
