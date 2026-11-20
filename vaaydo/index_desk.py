@@ -234,7 +234,6 @@ def run(asof: date | None = None, progress=None) -> Desk:
             views[s] = chain_view(A.date(), s)
         except Exception as e:
             notes.append(f"{s} chain view failed: {str(e)[:80]}")
-    say(90, "verdicts")
     say(85, "market breadth")
     B = pd.DataFrame()
     if BREADTH_B.exists():
@@ -251,6 +250,7 @@ def run(asof: date | None = None, progress=None) -> Desk:
         B = BR.features(raw)
         if B["DATE"].max() < A:
             notes.append(f"Market breadth is through {B['DATE'].max():%d %b}.")
+    say(90, "verdicts")                     # after breadth: the steps run in the order the work does
     tests = pd.read_parquet(TESTS_B) if TESTS_B.exists() else pd.DataFrame()
     cycles = pd.read_parquet(CYCLES_B) if CYCLES_B.exists() else pd.DataFrame()
     part_raw = Pt[Pt["date"] == Pt["date"].max()] if len(Pt) else Pt

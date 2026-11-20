@@ -9,17 +9,17 @@
 # is present, Streamlit builds Light, Dark and a third "Custom Theme Auto" =
 # getSystemThemePreference() === "dark" ? dark : light, and makes that third
 # one active: the native widgets followed THE VIEWER'S OPERATING SYSTEM, while
-# Sanket's appearance comes from its Slate/Paper toggle. A viewer whose OS
+# VAAYDO's appearance comes from its Paper/Slate switch. A viewer whose OS
 # disagreed with the app got native surfaces painted for the other appearance
 # (near-black date-picker cells and tab-strip fades on Paper, pale ones on Slate).
 #
 # With ONE section Streamlit takes the other branch — a single "Custom Theme"
 # for every viewer, whatever their OS — so the native layer is a known, fixed
-# state. It is DARK, to agree with APPEARANCES[0] in sanket.py (Slate is the
-# first-run default); Paper's natives are reclaimed in ui.theme.LIGHT_TOKENS and
-# theme.css. Same fix as Pragyam and the other terminals. If you add a widget
-# that paints itself from Streamlit's theme, claim it in CSS — do not add a
-# section back here.
+# state. It is the dark ramp because ui/theme.css is built Slate-first and
+# ui.theme.LIGHT_TOKENS reclaims the natives for Paper, which is the first-run
+# appearance (APPEARANCES[0] in app.py), as in Tattva and the family. If you add
+# a widget that paints itself from Streamlit's theme, claim it in CSS — do not
+# add a section back here.
 [theme]
 base = "dark"
 primaryColor = "#4C7DF0"

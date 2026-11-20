@@ -3209,3 +3209,95 @@ input, textarea { caret-color: var(--ink) !important; }
 [data-baseweb="select"] input {
     color: var(--ink) !important; -webkit-text-fill-color: var(--ink) !important;
 }
+
+/* ── The appearance switch reaches the rail's foot ────────────────────────────
+   The rail is meant to read identity → controls → settings, with the
+   appearance switch pinned to its foot (margin-top: auto above). Two things
+   kept it under the run button instead, in every app with a short rail:
+   the rail's content column was only as tall as its content (nothing to push
+   against), and Streamlit 1.52 wraps a keyed container in a layout wrapper,
+   so the auto margin sat on the inner block, not on the column's item. The
+   column now fills the rail and the wrapper takes the margin. A rail taller
+   than the window still scrolls as before. */
+[data-testid="stSidebarContent"] { display: flex; flex-direction: column; }
+[data-testid="stSidebarContent"] > [data-testid="stSidebarUserContent"] { flex: 1 0 auto; }
+[data-testid="stSidebar"] [data-testid="stLayoutWrapper"]:has(> .st-key-appearance) { margin-top: auto; }
+
+/* ── A set card keyed by a side ───────────────────────────────────────────────
+   A set card's key is a set's letter in violet (Sanket's A · B · C). A card
+   keyed by a side's glyph instead (Vaaydo's ▲ long, ▼ short, × exits) carries
+   the class `side`, and the glyph takes that side's ink, as its counts do. */
+.set-card.side .sc-key { color: var(--ink-secondary); }
+.set-card.side.success .sc-key { color: var(--long); }
+.set-card.side.danger .sc-key { color: var(--short); }
+
+/* ── The landing's three segments ─────────────────────────────────────────────
+   Every member's cold start reads as Arthagati's: Engines (three system panels),
+   Inputs & Scope (a KPI strip), Run Outputs (four cards). The panels are ONE grid
+   of plain divs, not three Streamlit containers, which each shrink to their own
+   content: the panel with the longest copy stood taller and the three spec blocks
+   started at three heights. `auto 1fr auto` rows give panels of different copy one
+   height and one baseline for their specs. The four outcome cards run 4-up, then
+   2-up, then 1-up, always a full rectangle (`auto-fit` laid them out 3 + 1, the
+   fourth alone on its row). */
+.system-grid {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--grid-gap); align-items: stretch;
+}
+.system-panel {
+    display: grid; grid-template-rows: auto 1fr auto;
+    background: var(--surface-1); border: 1px solid var(--line); border-radius: var(--r-lg);
+    overflow: hidden; transition: border-color var(--motion-base) var(--ease-standard);
+}
+.system-panel:hover { border-color: var(--line-strong); }
+.system-panel .panel-specs { border-top: 1px solid var(--line); padding-top: var(--s3); }
+.system-panel .panel-specs .lookback-row .val { text-align: right; }
+@media (max-width: 1024px) { .system-grid { grid-template-columns: minmax(0, 1fr); } }
+.outcome-grid {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--grid-gap); align-items: stretch;
+}
+@media (max-width: 1200px) { .outcome-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 640px)  { .outcome-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* ── The appearance switch sits at the rail's foot, on every screen ───────────────
+   Streamlit ends the rail with 6rem of padding, so the switch "pinned to the foot"
+   (margin-top: auto above) floated 96px above it on every screen; and on a rail taller
+   than the screen it sat below the fold until the rail was scrolled. The rail now ends at
+   the family's foot gap, plus a phone's home-bar inset, and the switch is sticky at the
+   bottom: where the rail fits, the auto margin seats it at the foot; where it scrolls, it
+   stays at the foot and the controls pass behind it, on the rail's own ground (every box
+   from the rail down inherits it: Slate paints the rail --surface-1, Paper --surface-2).
+   One exception, by screen size: a rail that carries the page list keeps the switch in
+   flow except on a desktop at least 820px tall. The list sits outside the controls' block, and a sticky element cannot
+   leave its block, so where a long list (Nivesa's eleven pages, taller still on a phone,
+   where its labels wrap) nearly fills the screen
+   the switch would pin at the block's top, half cut and over the controls. There it is the
+   rail's last item, 16px from its end. */
+[data-testid="stSidebarUserContent"] { padding-bottom: 0 !important; }
+[data-testid="stSidebar"] [data-testid="stLayoutWrapper"]:has(> .st-key-appearance) {
+    padding-top: var(--s3);
+    padding-bottom: calc(var(--s4) + env(safe-area-inset-bottom, 0px));
+}
+[data-testid="stSidebarContent"]:not(:has([data-testid="stSidebarNav"])),
+[data-testid="stSidebarContent"]:not(:has([data-testid="stSidebarNav"])) > [data-testid="stSidebarUserContent"],
+[data-testid="stSidebarContent"]:not(:has([data-testid="stSidebarNav"])) > [data-testid="stSidebarUserContent"] > div,
+[data-testid="stSidebarContent"]:not(:has([data-testid="stSidebarNav"])) > [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"],
+[data-testid="stSidebarContent"]:not(:has([data-testid="stSidebarNav"])) [data-testid="stLayoutWrapper"]:has(> .st-key-appearance) { background-color: inherit; }
+[data-testid="stSidebarContent"]:not(:has([data-testid="stSidebarNav"])) [data-testid="stLayoutWrapper"]:has(> .st-key-appearance) { position: sticky; bottom: 0; z-index: 3; isolation: isolate; }
+[data-testid="stSidebarContent"]:not(:has([data-testid="stSidebarNav"])) [data-testid="stLayoutWrapper"]:has(> .st-key-appearance)::before {
+    content: ""; position: absolute; z-index: -1;
+    top: 0; bottom: 0; left: -48px; right: -48px; background-color: inherit;
+}
+@media (min-height: 820px) and (min-width: 1025px) {
+    [data-testid="stSidebarContent"],
+    [data-testid="stSidebarContent"] > [data-testid="stSidebarUserContent"],
+    [data-testid="stSidebarContent"] > [data-testid="stSidebarUserContent"] > div,
+    [data-testid="stSidebarContent"] > [data-testid="stSidebarUserContent"] > div > [data-testid="stVerticalBlock"],
+    [data-testid="stSidebarContent"] [data-testid="stLayoutWrapper"]:has(> .st-key-appearance) { background-color: inherit; }
+    [data-testid="stSidebarContent"] [data-testid="stLayoutWrapper"]:has(> .st-key-appearance) { position: sticky; bottom: 0; z-index: 3; isolation: isolate; }
+    [data-testid="stSidebarContent"] [data-testid="stLayoutWrapper"]:has(> .st-key-appearance)::before {
+        content: ""; position: absolute; z-index: -1;
+        top: 0; bottom: 0; left: -48px; right: -48px; background-color: inherit;
+    }
+}
