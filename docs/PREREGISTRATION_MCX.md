@@ -67,4 +67,13 @@ reported as such.
 
 ## Changes after registration
 
-(none)
+**22 Nov 2026, data cleaning, decided from the return-series audit and before any signal or strategy
+return was computed:**
+1. A daily return beyond ±30% that reverses (sum within ±5%) inside three sessions is a data fault:
+   both days are set to zero (one case: COPPER, 17–20 Jun 2019, +166% / −158%, at the change from
+   two-monthly to monthly contracts).
+2. A commodity-year in which fewer than 60% of the expected expiries are detected is excluded for that
+   commodity (NICKEL 2023, 2024, 2025: 2, 1 and 4 of 12; the contract barely traded). Its positions are
+   flat in those years.
+3. Real extreme days are kept: crude in March–April 2020 (its negative front settlement never enters, as
+   the book holds the second contract), nickel's March 2022 squeeze, the March 2020 base-metal moves.
