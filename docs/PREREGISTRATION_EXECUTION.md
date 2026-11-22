@@ -45,3 +45,16 @@ Daily one-lot net return of each variant against S0, on the same days.
 ## Changes after registration
 
 (none)
+
+## Results
+
+### S1, intraday stop (22 Nov 2026): passes discovery narrowly, **fails the holdout**. The live book is unchanged.
+
+| | S0 (live) | S1 (intraday stop) | |
+|---|---|---|---|
+| Discovery, Jul 2024 – Dec 2025: Sharpe | +1.29 | +1.41 | +0.12; bootstrap p 0.087: passes |
+| Holdout, 2026 (looked at once): Sharpe / return a year | +0.19 / +1.2% | +0.05 / +0.4% | −0.84% a year: fails |
+| Whole period: Sharpe, worst drawdown, rupees (one lot) | 0.86, −6.3%, ₹51.7 L | 0.87, −7.4%, ₹51.5 L | no difference worth a change |
+
+Stops stay decided on the close and filled at the next open. (Research flag `intraday_stop` in book.simulate;
+the live book does not use it.)
