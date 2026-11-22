@@ -140,7 +140,7 @@ docs/  VISION.md · METHOD.md · RESEARCH_V6.md · PREREGISTRATION.md · RESEARC
 ```
 
 VAAYDO is a member of the Pragyam family (Tattva, Nishkarsh, Nivesa, Pragyam, Arthagati,
-Samhita, Swing, Sanket) and shares its interface: one stylesheet (`ui/theme.css`), one set
+Vyāpti, Samhita, Swing, Sanket) and shares its interface: one stylesheet (`ui/theme.css`), one set
 of components (`ui/components.py`), Slate and Paper appearances. Every chart and table sits
 in a panel whose header band carries its context; numbers are right-aligned in JetBrains
 Mono, signed ones in their sign's colour; each tab opens with a titled section. Changes are
@@ -160,7 +160,7 @@ in the [Changelog](CHANGELOG.md).
 
 ## The Pragyam Family
 
-Nine Streamlit applications built on one design system and one set of components, so a
+Ten Streamlit applications built on one design system and one set of components, so a
 panel, a table, a chart or a number reads the same in each.
 
 | Product | What it is |
@@ -168,6 +168,7 @@ panel, a table, a chart or a number reads the same in each.
 | [**Tattva**](https://github.com/thebullishvalue/Tattva) | Cross-asset fair value, with a call only where its own record supports one |
 | [**Nishkarsh**](https://github.com/thebullishvalue/Nishkarsh) | Nifty 50 inference: a top-down forecast and bottom-up breadth, read as one |
 | [**Arthagati**](https://github.com/thebullishvalue/Arthagati) | Valuation-anchored market sentiment, tested on data it never saw |
+| [**Vyapti**](https://github.com/thebullishvalue/Vyapti) | Market breadth: where participation stands, which way it moves, and what that has meant |
 | [**Pragyam**](https://github.com/thebullishvalue/Pragyam) | Portfolio curation that spreads risk rather than predicting returns |
 | [**Sanket**](https://github.com/thebullishvalue/Sanket) | A market signal screener: what fired, what is about to, and whether it has paid |
 | **Vaaydo** · *this repository* | An F&O trade screener on option positioning, with futures tickets |
