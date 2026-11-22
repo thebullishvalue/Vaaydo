@@ -37,3 +37,22 @@ years; the vault holds it per stock-session (open, 30/60-minute and session VWAP
 ## Changes after registration
 
 (none)
+
+## Result (22 Nov 2026): no feature survives discovery
+
+Panel: 120,552 stock-sessions (about 209 stocks a day), Jul 2024 – Nov 2026. Discovery, Jul 2024 – Dec 2025:
+
+| Feature | h | IC | NW t | IC net of the score | t | |
+|---|---|---|---|---|---|---|
+| on10 (overnight) | 10 | −0.011 | −0.86 | −0.009 | −0.71 | fails |
+| | 5 | −0.014 | −1.43 | −0.012 | −1.26 | fails |
+| id10 (intraday) | 10 | +0.018 | +1.16 | +0.001 | +0.08 | fails |
+| | 5 | +0.009 | +0.69 | −0.006 | −0.48 | fails |
+| tug10 (overnight − intraday) | 10 | −0.020 | −1.23 | −0.004 | −0.29 | fails |
+| | 5 | −0.012 | −1.08 | +0.000 | +0.04 | fails |
+| cv5 (close vs session VWAP) | 10 | +0.019 | +1.31 | +0.013 | +0.90 | fails |
+| | 5 | +0.005 | +0.45 | −0.001 | −0.13 | fails |
+
+Nothing reaches |t| 3; what little there is mostly overlaps the option-positioning score already in the book
+(the net-of-score t falls to ≤ 1.3), and the signs run opposite to the US findings that motivated I1–I3. The
+holdout was not computed. The score is unchanged.
