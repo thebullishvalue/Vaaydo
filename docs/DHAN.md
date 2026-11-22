@@ -47,7 +47,7 @@ Stable anchor before this work: branch `stable/v7.4.2` (main on 22 Nov 2026). To
 | 1 | Verify the data | **Passed** (section 1) |
 | 2 | Contract identity, MCX calendar, contract specs, costs; research panel | Every recovered expiry within MCX's rule; every roll priced from a real contract |
 | 3 | Preregister and test commodity hypotheses (trend, carry, OI build-up), 2012–2026 | Nishkarsh standard; out of sample; after costs |
-| 4 | Private store, Dhan client, nightly job with token renewal; daily MCX option-chain record | Unattended for 5 sessions |
+| 4 | Private store, Dhan client, nightly job with token renewal; daily MCX option-chain record | Built (`vaaydo/dhan/`, vault workflow); live once on main with the Dhan secrets; gate: unattended for 5 sessions |
 | 5 | Commodities universe in the app (login), book or paper per step 3 | Same audits as stocks: legs vs data, engines identical |
 | 6 | Dhan data points for the NSE universes (intraday stops and fills, live IV), each tested first | Preregistered improvement or not shipped |
 
@@ -56,3 +56,13 @@ Stable anchor before this work: branch `stable/v7.4.2` (main on 22 Nov 2026). To
 * A **private** GitHub repository for Dhan data (e.g. `vaaydo-vault`), added to Claude's sessions.
 * Streamlit Cloud secrets: a read-only token for that repository, and a password for the login.
 * The Dhan token as a secret of that repository, plus a fine-grained GitHub token allowed to update its secrets.
+
+## 5. How the nightly collection proves identity (step 4)
+
+Dhan's daily history for a contract id is stitched by the contract's current rank, and its quote endpoint is
+per real contract but its "close" is not the official close for every commodity (crude showed the previous
+session's). So the collector takes official bars from history and keeps a row only if it is provably the
+contract's own: the latest session when its open, high, low and volume equal the contract's quote; an earlier
+session only when it falls after the commodity's latest expiry (known from the vault's own contract record).
+Tested live (22 Nov 2026): 63 contracts verified across 24 commodities; crude's 19 Nov row, which history
+files under December but belongs to the expired November contract, is rejected.
