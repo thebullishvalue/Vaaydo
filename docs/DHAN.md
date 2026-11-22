@@ -46,8 +46,8 @@ Stable anchor before this work: branch `stable/v7.4.2` (main on 22 Nov 2026). To
 |---|---|---|
 | 1 | Verify the data | **Passed** (section 1) |
 | 2 | Contract identity, MCX calendar, contract specs, costs; research panel | Every recovered expiry within MCX's rule; every roll priced from a real contract |
-| 3 | Preregister and test commodity hypotheses (trend, carry, OI build-up), 2012–2026 | Nishkarsh standard; out of sample; after costs |
-| 4 | Private store, Dhan client, nightly job with token renewal; daily MCX option-chain record | Built (`vaaydo/dhan/`, vault workflow); live once on main with the Dhan secrets; gate: unattended for 5 sessions |
+| 3 | Preregister and test commodity hypotheses (trend, carry, OI build-up), 2012–2026 | **Done: none survives discovery** (docs/PREREGISTRATION_MCX.md). Commodities is a desk, no trades |
+| 4 | Private store, Dhan client, nightly job with token renewal; daily MCX option-chain record | **Live since 22 Nov 2026** (first run: token renewed, 20 Nov collected); gate: unattended for 5 sessions |
 | 5 | Commodities universe in the app (login), book or paper per step 3 | Same audits as stocks: legs vs data, engines identical |
 | 6 | Dhan data points for the NSE universes (intraday stops and fills, live IV), each tested first | Preregistered improvement or not shipped |
 

@@ -77,3 +77,28 @@ return was computed:**
    flat in those years.
 3. Real extreme days are kept: crude in March–April 2020 (its negative front settlement never enters, as
    the book holds the second contract), nickel's March 2022 squeeze, the March 2020 base-metal moves.
+
+## Result (22 Nov 2026): no hypothesis survives discovery
+
+Discovery, 2013–2018, monthly net returns of the equal-risk book of the nine (rule: Sharpe > 0.3 and NW t ≥ 2):
+
+| | Return / yr | Sharpe | NW t | |
+|---|---|---|---|---|
+| H1 trend 12-1 | −1.6% | −0.16 | −0.43 | fails |
+| H2 trend 3-month | +0.4% | +0.04 | +0.13 | fails |
+| H3 carry | +2.2% | +0.25 | +0.58 | fails |
+| H4 OI build-up | +6.7% | +0.52 | +1.73 | fails (closest; t below 2) |
+| H5 cross-sectional momentum | +0.5% | +0.06 | +0.13 | fails |
+| Long-only (benchmark) | −8.1% | −0.56 | −1.50 | |
+
+Validation (2019–2022) and the final period (2023–2026) were **not computed**: the gates are enforced in code,
+and nothing reached them. They remain unseen.
+
+Engine check: the held-contract return of each commodity trails its front price by the cost of carry, as a
+rolled futures position must (2013–18: gold −11% vs +2%, silver −60% vs −33%, crude −71% vs −37%, natural gas
+−66% vs +15%: INR futures sit above spot by roughly Indian interest rates, more in natural gas's steep
+contango). The long-only loss is that carry plus 2013–15's commodity bear market.
+
+**Consequence:** VAAYDO gives no commodity trades. The Commodities universe is a desk (term structure, open
+interest, the option chain, the daily record) with the five readings tracked on paper, as the Indices desk
+does. A hypothesis may be re-registered only with a new idea, never by retuning these five.
