@@ -69,9 +69,8 @@ class Prices:
         F = F.copy()
         F["date"] = pd.to_datetime(F["date"])
         F["expiry"] = pd.to_datetime(F["expiry"])
-        for c in ("open", "close", "high", "low"):
-            if c in F:
-                F[c] = F[c].where(F[c] > 0)
+        for c in ("open", "close"):
+            F[c] = F[c].where(F[c] > 0)
         self.ca = corporate_action_factors(F)
         for k, v in (extra_ca or {}).items():
             self.ca.setdefault(k, v)
@@ -90,8 +89,6 @@ class Prices:
         F = F.set_index(["date", "symbol", "expiry"])
         self.o = F["open"]
         self.c = F["close"]
-        self.h = F["high"] if "high" in F else None       # the session's range: only the intraday-stop research uses it
-        self.l = F["low"] if "low" in F else None
         # rupee weight of one lot: the exchange's lot where the file has one, else the estimate
         # (lot_w, 2019 - Jul 2024: NSE's old file carries no lot). Never used to detect corporate actions.
         lw = F["lot"].where(F["lot"] > 0) if "lot" in F else pd.Series(np.nan, index=F.index)
@@ -105,10 +102,7 @@ class Prices:
 
     def px(self, d, s, e, which="close"):
         try:
-            src = {"close": self.c, "open": self.o, "high": self.h, "low": self.l}[which]
-            if src is None:
-                return np.nan
-            v = src.loc[(d, s, e)]
+            v = (self.c if which == "close" else self.o).loc[(d, s, e)]
             return float(v) if np.isfinite(v) else np.nan
         except KeyError:
             return np.nan
@@ -116,17 +110,11 @@ class Prices:
 
 def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, stops: pd.DataFrame | None = None,
              stop_mult=2.0, start=None, end=None, membership: dict | None = None, trail: bool = False,
-             ban_after_stop: bool = True, fno_ban: frozenset | None = None, attrib: dict | None = None,
-             intraday_stop: bool = False, fill_adj: dict | None = None) -> pd.DataFrame:
+             ban_after_stop: bool = True, fno_ban: frozenset | None = None, attrib: dict | None = None) -> pd.DataFrame:
     """scores: date, symbol, score (higher = long). Returns a daily frame:
       ret        equal rupees in every name: (mean long return + mean short return), the research measure
       ret_lot    ONE LOT of every name (what VAAYDO trades): rupee P&L after costs / gross rupee exposure
-      pnl_rs     one-lot rupee P&L before costs (reconciles with the live ledger's legs)
-
-    Research variants (docs/PREREGISTRATION_EXECUTION.md; the live book uses neither):
-      intraday_stop  the stop is a resting order: exit the session its low (long) / high (short) reaches it,
-                     at the stop level, or at the open if the open is already through it (needs high/low)
-      fill_adj       {(date, symbol): ratio}: every open fill (entries and exits) at open × ratio"""
+      pnl_rs     one-lot rupee P&L before costs (reconciles with the live ledger's legs)"""
     cost = futures_cost() if cost is None else cost
     half = cost / 2
     scores = scores.dropna(subset=["score"]).copy()
@@ -205,11 +193,9 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                 if trail and held.get("stop") and np.isfinite(c_prev):
                     best = max(held["best"], c_prev) if held["side"] > 0 else min(held["best"], c_prev)
                     held = dict(held, best=best, stop=best * held["k"])
-                if held.get("stop") and np.isfinite(c_prev) and not intraday_stop:
+                if held.get("stop") and np.isfinite(c_prev):
                     lvl = held["stop"]
                     stopped = (c_prev <= lvl) if held["side"] > 0 else (c_prev >= lvl)
-                if fill_adj is not None and np.isfinite(o):
-                    o = o * fill_adj.get((nxt, s), 1.0)
                 if (nxt, s) not in P.present and nxt < e:
                     # the contract stopped printing before expiry (merger, rename): closed at its last print
                     pnl[held["side"]].append(-half)
@@ -226,19 +212,6 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                     book_lot(held["side"], ra - half, held["side"] * q * (c_now - c_prev_adj), q * c_prev_adj, sym=s)
                     trades += 1
                     continue
-                if intraday_stop and w == held["side"] and held.get("stop") and np.isfinite(c_prev) and np.isfinite(o):
-                    lvl = held["stop"] * f_n                       # in the session's own (post-adjustment) terms
-                    lo_, hi_ = P.px(nxt, s, e, "low"), P.px(nxt, s, e, "high")
-                    hit = (np.isfinite(lo_) and lo_ <= lvl) if held["side"] > 0 else (np.isfinite(hi_) and hi_ >= lvl)
-                    if hit:
-                        fill = (min(o, lvl) if held["side"] > 0 else max(o, lvl))
-                        rx = held["side"] * (fill / c_prev_adj - 1)
-                        pnl[held["side"]].append(rx - half)
-                        book_lot(held["side"], rx - half, held["side"] * q * (fill - c_prev_adj), q * c_prev_adj, sym=s)
-                        trades += 1
-                        if ban_after_stop:
-                            banned[s] = held["side"]
-                        continue
                 if w == held["side"] and not stopped:
                     if not np.isfinite(c_now) or not np.isfinite(c_prev):
                         new_book[s] = held
@@ -281,8 +254,6 @@ def simulate(scores: pd.DataFrame, P: Prices, enter=0.10, stay=0.20, cost=None, 
                 if e is None or (fno_ban and (nxt, s) in fno_ban):   # no fresh position during an F&O ban
                     continue
                 o, c_now = P.px(nxt, s, e, "open"), P.px(nxt, s, e)
-                if fill_adj is not None and np.isfinite(o):
-                    o = o * fill_adj.get((nxt, s), 1.0)
                 if not (np.isfinite(o) and np.isfinite(c_now)):
                     continue
                 stop, k = None, None
