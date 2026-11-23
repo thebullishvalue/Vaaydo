@@ -140,7 +140,7 @@ docs/  VISION.md · METHOD.md · RESEARCH_V6.md · PREREGISTRATION.md · RESEARC
 ```
 
 VAAYDO is a member of the Pragyam family (Tattva, Nishkarsh, Nivesa, Pragyam, Arthagati,
-Vyāpti, Samhita, Swing, Sanket) and shares its interface: one stylesheet (`ui/theme.css`), one set
+Vyāpti, Anumaan, Samhita, Swing, Sanket) and shares its interface: one stylesheet (`ui/theme.css`), one set
 of components (`ui/components.py`), Slate and Paper appearances. Every chart and table sits
 in a panel whose header band carries its context; numbers are right-aligned in JetBrains
 Mono, signed ones in their sign's colour; each tab opens with a titled section. Changes are
@@ -160,7 +160,7 @@ in the [Changelog](CHANGELOG.md).
 
 ## The Pragyam Family
 
-Ten Streamlit applications built on one design system and one set of components, so a
+Eleven Streamlit applications built on one design system and one set of components, so a
 panel, a table, a chart or a number reads the same in each.
 
 | Product | What it is |
@@ -172,6 +172,7 @@ panel, a table, a chart or a number reads the same in each.
 | [**Pragyam**](https://github.com/thebullishvalue/Pragyam) | Portfolio curation that spreads risk rather than predicting returns |
 | [**Sanket**](https://github.com/thebullishvalue/Sanket) | A market signal screener: what fired, what is about to, and whether it has paid |
 | **Vaaydo** · *this repository* | An F&O trade screener on option positioning, with futures tickets |
+| [**Anumaan**](https://github.com/thebullishvalue/Indicator) | A chart terminal: calibrated risk, stops and exposure, audited on the chart it is on |
 | [**Nivesa**](https://github.com/thebullishvalue/Nivesa) | A bond portfolio ledger: cost, yield, duration and cashflows across accounts |
 | [**Samhita**](https://github.com/thebullishvalue/Samhita) | A portfolio tracker: live prices, performance and risk against the benchmark |
 | [**Swing**](https://github.com/thebullishvalue/Swing) | A portfolio tracker for the swing book, on the same engine as Samhita |

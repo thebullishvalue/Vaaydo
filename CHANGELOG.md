@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.
 and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
 
 VAAYDO shares its interface with the Pragyam family (Tattva, Nishkarsh, Nivesa, Pragyam,
-Arthagati, Vyāpti, Samhita, Swing, Sanket): one stylesheet, one set of components, one way a panel,
+Arthagati, Vyāpti, Anumaan, Samhita, Swing, Sanket): one stylesheet, one set of components, one way a panel,
 a table, a chart or a number looks. A change to that shared layer lands in every member.
 
 ---
