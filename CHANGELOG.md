@@ -11,6 +11,15 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.4.4] — 2026-11-24 — *The help icon, in step*
+### Changed
+- **The family's fidelity block, in step.** It gains the rule that makes a help icon's (?) follow its colour:
+  Streamlit strokes the ring near-white at 60% whatever colour it is given, which all but hid it on Paper in
+  Vyāpti, Pragyam, Arthagati, Nivesa and Anumaan. No widget here shows a help icon today; the block stays
+  identical in every member, so the next one reads.
+
+---
+
 ## [7.4.3] — 2026-11-24 — *The family's tab icon*
 ### Fixed
 - **The browser tab carries the family's mark.** The tab showed a "⚡" emoji while every other

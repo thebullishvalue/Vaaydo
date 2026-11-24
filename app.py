@@ -24,7 +24,7 @@ from vaaydo.logger_config import console, capture_library_output, route_logging
 import ui.desk as desk_view
 from vaaydo.universe import UNIVERSES, constituents
 
-VERSION = "7.4.3"
+VERSION = "7.4.4"
 _FAVICON = (  # Tattva's exact tab icon (its cobalt ring-and-line mark), the same bytes as every member's, so the
               # family's tabs match
     "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9Ij"
