@@ -11,6 +11,14 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.4.3] — 2026-11-24 — *The family's tab icon*
+### Fixed
+- **The browser tab carries the family's mark.** The tab showed a "⚡" emoji while every other
+  member shows Tattva's cobalt ring-and-line icon; it now uses the same bytes as theirs, so the
+  family's tabs read as one set.
+
+---
+
 ## [7.4.2] — 2026-11-20 — *Pragyam Levels in its phase; one box per tooltip*
 ### Fixed
 - **The progress card puts Pragyam Levels in Book & Flow.** 7.4.0 gave the levels their own run step
