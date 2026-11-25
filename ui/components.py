@@ -826,6 +826,7 @@ def table_shell_css(*, max_height: int = 520) -> str:
     return f"""
     @import url('{_TABLE_FONTS}');
     * {{ margin:0; padding:0; box-sizing:border-box; }}
+    html {{ -webkit-text-size-adjust:100%; text-size-adjust:100%; }}   /* iOS keeps the type scale as written (theme.css: "Text keeps its size on a phone") */
     body {{ font-family:{MONO_STACK};
             background:transparent; color:{t['ink_primary']};
             font-variant-numeric:tabular-nums; font-feature-settings:"tnum" 1,"zero" 1; }}

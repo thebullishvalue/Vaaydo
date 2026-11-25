@@ -11,6 +11,15 @@ a table, a chart or a number looks. A change to that shared layer lands in every
 
 ---
 
+## [7.4.5] — 2026-11-25 — *Text keeps its size on an iPhone*
+### Fixed
+- **Text keeps its size on an iPhone.** iOS Safari enlarges the text of a block it judges too wide to read
+  ("text autosizing"): a table that scrolls sideways with long lines in it was drawn with its prose
+  columns, and their headers, at twice the size of the rest (found on Nivesa's Audit Trail). The page and
+  every table's own iframe now keep the type scale as written (the shared fidelity block, and table_shell_css, which every table's iframe uses).
+
+---
+
 ## [7.4.4] — 2026-11-24 — *The help icon, in step*
 ### Changed
 - **The family's fidelity block, in step.** It gains the rule that makes a help icon's (?) follow its colour:
